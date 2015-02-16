@@ -9,7 +9,7 @@
 #import os
 #set dev_env = os.environ.get('GALAXY_DEVELOPMENT_ENVIRONMENT', '0') == '1'
 #if not $dev_env and ( $__user_email__ not in $__admin_users__ ):
-     rgToolFactory2.py --bad_user $__user_email__ $dev_env
+     rgToolFactory2.py --bad_user $__user_email__
 #else:
     rgToolFactory2.py --script_path "$runme" --interpreter "$interp.interpreter" 
      --tool_name "$tool_name"  --user_email "$__user_email__" --citations "$citeme"
@@ -52,7 +52,7 @@
             #end if
         #end for
     #end if
-#end if
+#end if 
   </command>
   <inputs>
     <param name="input_tab"  type="data"  label="Select one or more input file(s) from your history" optional="true" size="120" multiple="true"

@@ -54,9 +54,9 @@ setup(
         'planemo_ext.galaxy.tools.deps.resolvers',
         'planemo_ext.galaxy.util',
     ],
-    data_files=[('tool_factory_2', ['tool_factory_2/rgToolFactory2.xml',
-                                    'tool_factory_2/rgToolFactory2.py',
-                                    'tool_factory_2/getlocalrpackages.py']),
+    data_files=[('tool_factory_2', ['extern/tool_factory_2/rgToolFactory2.xml',
+                                    'extern/tool_factory_2/rgToolFactory2.py',
+                                    'extern/tool_factory_2/getlocalrpackages.py']),
                 ('planemo_ext/galaxy/util', ['planemo_ext/galaxy/util/docutils_template.txt']),
                ],
     entry_points='''

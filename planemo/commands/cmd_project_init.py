@@ -15,9 +15,13 @@ from planemo.io import (
 )
 
 SOURCE_HOST = "https://codeload.github.com"
-DOWNLOAD_URL = "%s/galaxyproject/planemo/tar.gz/master" % SOURCE_HOST
+DOWNLOAD_URL_TEMPLATE = "%s/galaxyproject/planemo/tar.gz/%s"
 UNTAR_FILTER = "--strip-components=2"
 UNTAR_ARGS = " -C %s -zxf - " + UNTAR_FILTER
+
+BRANCH_TEMPLATES = {
+    'cwl': 'cwl',
+}
 
 
 @click.command("project_init")
@@ -37,10 +41,12 @@ def cli(ctx, path, template=None, **kwds):
     if template is None:
         return
 
+    branch = BRANCH_TEMPLATES.get(template, "master")
     tempdir = tempfile.mkdtemp()
     try:
         untar_args = UNTAR_ARGS % (tempdir)
-        untar_to(DOWNLOAD_URL, tempdir, untar_args)
+        download_url = DOWNLOAD_URL_TEMPLATE % (SOURCE_HOST, branch)
+        untar_to(download_url, tempdir, untar_args)
         shell("ls '%s'" % (tempdir))
         shell("mv '%s/%s'/* '%s'" % (tempdir, template, path))
     finally:

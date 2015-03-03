@@ -1,0 +1,77 @@
+{
+    "@type": "CommandLineTool",
+    "@context": "https://raw.githubusercontent.com/common-workflow-language/common-workflow-language/draft-2-pa/schemas/draft-2/context.json",
+    "requirements": [
+        {
+            "requirementType": "MemoryRequirement",
+            "value": 5000
+        }
+    ],
+    "hints": [
+        {
+            "requirementType": "DockerImage",
+            "dockerPull": "images.sbgenomics.com/rabix/bwa",
+            "dockerImageId": "9d3b9b0359cf"
+        }
+    ],
+    "inputs": [
+        {
+            "port": "#reference",
+            "type": "File",
+            "binding": {
+                "position": 2
+            }
+        },
+        {
+            "port": "#reads",
+            "type": {
+                "type": "array",
+                "items": "File",
+                "binding": {
+                    "position": 3
+                }
+            }
+        },
+        {
+            "port": "#minimum_seed_length",
+            "type": "int",
+            "binding": {
+                "position": 1,
+                "prefix": "-m"
+            }
+        },
+        {
+            "port": "#min_std_max_min",
+            "type": {
+                "type": "array",
+                "items": "int"
+            },
+            "binding": {
+                "itemSeparator": ",",
+                "position": 1,
+                "prefix": "-I"
+            }
+        }
+    ],
+    "outputs": [
+        {
+            "port": "#sam",
+            "type": "File",
+            "binding": {
+                "glob": "output.sam"
+            }
+        }
+    ],
+    "baseCommand": ["bwa", "mem"],
+    "arguments": [
+        {
+            "valueFrom": {
+                "expressionType": "javascript",
+                "value": "$job.allocatedResources.cpu"
+            },
+            "position": 1,
+            "prefix": "-t"
+        }
+    ],
+    "stdout": "output.sam"
+}

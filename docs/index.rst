@@ -17,6 +17,7 @@ Contents:
    appliance
    writing
    commands
+   cwl
    contributing
    developing
    history

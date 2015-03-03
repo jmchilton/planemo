@@ -5,4 +5,8 @@ pyyaml
 bioblend
 docutils
 jinja2
-
+jsonschema
+requests
+avro
+rdflib
+rdflib-jsonld

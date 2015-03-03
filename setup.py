@@ -21,6 +21,11 @@ requirements = [
     'docutils',
     'PyGithub',
     'bioblend',
+    'jsonschema',
+    'requests',
+    'avro',
+    'rdflib',
+    'rdflib-jsonld',
 ]
 
 test_requirements = [
@@ -53,12 +58,15 @@ setup(
         'planemo_ext.galaxy.tools.deps',
         'planemo_ext.galaxy.tools.deps.resolvers',
         'planemo_ext.galaxy.util',
+        'planemo_ext.cwltool',
     ],
     entry_points='''
         [console_scripts]
         planemo=planemo.cli:planemo
     ''',
     package_data={'planemo_ext': ['galaxy/util/docutils_template.txt',
+                                  'cwltool/schemas/draft-1/*',
+                                  'cwltool/schemas/draft-2/*',
                                   'tool_factory_2/rgToolFactory2.xml',
                                   'tool_factory_2/rgToolFactory2.py',
                                   'tool_factory_2/getlocalrpackages.py',

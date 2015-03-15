@@ -19,6 +19,10 @@ from planemo import cwl
     "draft",
     flag_value=cwl.DRAFT2,
 )
+@click.option(
+    "--use_cwltool",
+    flag=True,
+)
 @pass_context
 def cli(ctx, path, draft, **kwds):
     """ Convert a CWL Tool to Galaxy representation. (Experimental).

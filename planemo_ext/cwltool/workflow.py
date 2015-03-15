@@ -1,284 +1,227 @@
-import os
+import job
+import draft1tool
+import draft2tool
+from draft2tool import aslist
+from process import Process
+import copy
 import logging
-import functools
-import json
-from datetime import datetime
-from copy import deepcopy
-from collections import defaultdict
+import random
+from ref_resolver import from_url
+import os
 
-from rdflib import Graph, URIRef, Literal, RDF, XSD
-from rdflib.namespace import Namespace, NamespaceManager
+_logger = logging.getLogger("cwltool")
 
-from tool_new import jseval
-
-
-log = logging.getLogger(__file__)
-
-CWL = Namespace('http://github.com/common-workflow-language/')
-WFD = Namespace('http://purl.org/wf4ever/wfdesc#')
-PROV = Namespace('http://www.w3.org/ns/prov#')
-DCT = Namespace('http://purl.org/dc/terms/')
-CNT = Namespace('http://www.w3.org/2011/content#')
-
-
-def get_value(graph, iri):
-    chars = graph.value(iri, CNT.chars)
-    if chars:
-        return json.load(chars.toPython())
-    return graph.value(iri).toPython()
-
-
-def set_value(graph, iri, val):
-    if isinstance(val, (dict, list)):
-        graph.set([iri, CNT.chars, Literal(json.dumps(val))])
+def makeTool(toolpath_object, basedir):
+    if "schema" in toolpath_object:
+        return draft1tool.Tool(toolpath_object)
+    elif "impl" in toolpath_object and toolpath_object.get("class", "External") == "External":
+        return External(toolpath_object, basedir)
+    if "class" in toolpath_object:
+        if toolpath_object["class"] == "CommandLineTool":
+            return draft2tool.CommandLineTool(toolpath_object)
+        elif toolpath_object["class"] == "ExpressionTool":
+            return draft2tool.ExpressionTool(toolpath_object)
+        elif toolpath_object["class"] == "Workflow":
+            return Workflow(toolpath_object)
     else:
-        graph.set([iri, RDF.value, Literal(val)])
+        raise Exception("Missing 'class' field, expecting one of: Workflow, CommandLineTool, ExpressionTool, External")
 
 
-class Inputs(object):
-    def __init__(self, graph, tuples):
-        self.g = graph
-        self.d = {}
-        self.wrapped = []
-        for k, v in tuples:
-            self[k] = v
+def should_fanout(src_type, dest_type):
+    if isinstance(src_type, dict):
+        if src_type["type"] == "array" and src_type["items"] == dest_type:
+            return True
+    return False
 
-    def __getitem__(self, item):
-        return self.d[item]
+class WorkflowJob(object):
+    def try_make_job(self, s):
+        jo = {}
+        fanout = None
+        for i in s.tool["inputs"]:
+            _logger.debug(i)
+            if "connect" in i:
+                connect = i["connect"]
+                if isinstance(connect, list):
+                    # Handle multiple inputs
+                    if not fanout:
+                        fanout = i["id"][1:]
+                        jo[i["id"][1:]] = []
+                    else:
+                        raise Exception("Can only fanout on one port")
+                for c in aslist(connect):
+                    src = c["source"][1:]
+                    if src in self.state:
+                        if self.state[src][0]["type"] == i["type"]:
+                            if fanout:
+                                jo[i["id"][1:]].append(self.state[src][1])
+                            else:
+                                jo[i["id"][1:]] = self.state[src][1]
+                        elif should_fanout(self.state[src][0]["type"], i["type"]):
+                            if fanout:
+                                if fanout == i["id"][1:]:
+                                    jo[i["id"][1:]].extend(self.state[src][1])
+                                else:
+                                    raise Exception("Can only fanout on one port")
+                            else:
+                                fanout = i["id"][1:]
+                                jo[i["id"][1:]] = self.state[src][1]
+                        else:
+                            raise Exception("Type mismatch '%s' and '%s'" % (src, i["id"][1:]))
+                    else:
+                        return None
+            elif "default" in i:
+                jo[i["id"][1:]] = i["default"]
 
-    def __setitem__(self, key, value):
-        if key not in self.d:
-            self.d[key] = get_value(self.g, value)
-        elif key in self.wrapped:
-            self.d[key].append(get_value(self.g, value))
+        _logger.info("Creating job with input: %s", jo)
+        if fanout:
+            s = Fanout(s, fanout)
+        return s.job(jo, self.basedir)
+
+    def run(self, outdir=None, **kwargs):
+        for s in self.steps:
+            s.completed = False
+
+        run_all = len(self.steps)
+        while run_all:
+            made_progress = False
+            for s in self.steps:
+                if not s.completed:
+                    job = self.try_make_job(s)
+                    if job:
+                        (joutdir, output) = job.run(outdir=outdir)
+                        for i in s.tool["outputs"]:
+                            _logger.info("Job got output: %s", output)
+                            if "id" in i:
+                                if i["id"][1:] in output:
+                                    self.state[i["id"][1:]] = (i, output[i["id"][1:]])
+                                else:
+                                    raise Exception("Output is missing expected field %s" % i["id"][1:])
+                        s.completed = True
+                        made_progress = True
+                        run_all -= 1
+            if not made_progress:
+                raise Exception("Deadlocked")
+
+        wo = {}
+        for i in self.outputs:
+            if "connect" in i:
+                src = i["connect"]["source"][1:]
+                wo[i["id"][1:]] = self.state[src][1]
+
+        return (outdir, wo)
+
+
+class Workflow(Process):
+    def __init__(self, toolpath_object):
+        super(Workflow, self).__init__(toolpath_object, "Workflow")
+
+    def job(self, joborder, basedir, use_container=True):
+        wj = WorkflowJob()
+        wj.basedir = basedir
+        wj.steps = [makeTool(s, basedir) for s in self.tool.get("steps", [])]
+        random.shuffle(wj.steps)
+
+        wj.state = {}
+        for i in self.tool["inputs"]:
+            iid = i["id"][1:]
+            if iid in joborder:
+                wj.state[iid] = (i, copy.deepcopy(joborder[iid]))
+            elif "default" in i:
+                wj.state[iid] = (i, copy.deepcopy(i["default"]))
+        wj.outputs = self.tool["outputs"]
+        return wj
+
+class ExternalJob(object):
+    def __init__(self, tool, innerjob):
+        self.tool = tool
+        self.innerjob = innerjob
+
+    def run(self, **kwargs):
+        self.impl = self.tool["impl"]
+        (outdir, output) = self.innerjob.run(**kwargs)
+        for i in self.tool["outputs"]:
+            d = i["def"][len(self.impl)+1:]
+            output[i["id"][1:]] = output[d]
+            del output[d]
+
+        return (outdir, output)
+
+class External(Process):
+    def __init__(self, toolpath_object, basedir):
+        self.impl = toolpath_object["impl"]
+        self.embedded_tool = makeTool(from_url(os.path.join(basedir, self.impl)), basedir)
+
+        if "id" in toolpath_object:
+            self.id = toolpath_object["id"]
         else:
-            self.d[key] = [self.d[key], get_value(self.g, value)]
-            self.wrapped.append(key)
+            self.id = "#step_" + str(random.randint(1, 1000000000))
 
-    def to_dict(self):
-        return {k[k.rfind('/') + 1:]: v for k, v in self.d.iteritems()}
+        for i in toolpath_object["inputs"]:
+            d = i["def"][len(self.impl):]
+            toolid = i.get("id", self.id + "." + d[1:])
+            found = False
+            for a in self.embedded_tool.tool["inputs"]:
+                if a["id"] == d:
+                    i.update(a)
+                    found = True
+            if not found:
+                raise Exception("Did not find input '%s' in external process" % (i["def"]))
 
+            i["id"] = toolid
 
-def lazy(func):
-    attr = '__lazy_' + func.__name__
+        for i in toolpath_object["outputs"]:
+            d = i["def"][len(self.impl):]
+            toolid = i["id"]
+            found = False
+            for a in self.embedded_tool.tool["outputs"]:
+                if a["id"] == d:
+                    i.update(a)
+                    found = True
+            if not found:
+                raise Exception("Did not find output '%s' in external process" % (i["def"]))
 
-    @functools.wraps(func)
-    def wrapped(self):
-        if not hasattr(self, attr):
-            setattr(self, attr, func(self))
-        return getattr(self, attr)
-    return property(wrapped)
+            i["id"] = toolid
 
+        super(External, self).__init__(toolpath_object, "Process")
 
-class Process(object):
-    def __init__(self, graph, iri):
-        self.g = graph
-        self.iri = URIRef(iri)
+    def job(self, joborder, basedir, **kwargs):
+        for i in self.tool["inputs"]:
+            d = i["def"][len(self.impl)+1:]
+            joborder[d] = joborder[i["id"][1:]]
+            del joborder[i["id"][1:]]
 
-    activity = lazy(lambda self: self.g.value(None, CWL.activityFor, self.iri))
-    inputs = lazy(lambda self: list(self.g.objects(self.iri, WFD.hasInput)))
-    outputs = lazy(lambda self: list(self.g.objects(self.iri, WFD.hasOutput)))
-    started = lazy(lambda self: self.g.value(self.activity, PROV.startedAtTime) if self.activity else None)
-    ended = lazy(lambda self: self.g.value(self.activity, PROV.endedAtTime) if self.activity else None)
-    has_prereqs = lazy(lambda self: all([None, CWL.producedByPort, src] in self.g for src in self.sources))
+        return ExternalJob(self.tool, self.embedded_tool.job(joborder, basedir, **kwargs))
 
-    @lazy
-    def has_prereqs(self):
-        return all([None, CWL.producedByPort, src] in self.g for src in self.sources)
+class FanoutJob(object):
+    def __init__(self, outputports, jobs):
+        self.outputports = outputports
+        self.jobs = jobs
 
-    @lazy
-    def sources(self):
-        return [x[0] for x in self.g.query('''
-        select ?src
-        where {
-            <%s> wfd:hasInput ?port .
-            ?link   wfd:hasSink ?port ;
-                    wfd:hasSource ?src .
-        }
-        ''' % self.iri)]
+    def run(self, **kwargs):
+        outputs = {}
+        for outschema in self.outputports:
+            outputs[outschema["id"][1:]] = []
+        for j in self.jobs:
+            (_, out) = j.run(**kwargs)
+            for outschema in self.outputports:
+                outputs[outschema["id"][1:]].append(out[outschema["id"][1:]])
+        return (None, outputs)
 
-    @lazy
-    def input_values(self):
-        return self.g.query('''
-        select ?port ?val
-        where {
-            <%s> wfd:hasInput ?port .
-            ?link   wfd:hasSink ?port ;
-                    wfd:hasSource ?src .
-            ?val cwl:producedByPort ?src .
-        }
-        ''' % self.iri)
+class Fanout(object):
+    def __init__(self, process, fanout_key):
+        self.process = process
+        self.fanout_key = fanout_key
+        self.outputports = []
+        for out in self.process.tool["outputs"]:
+            newout = copy.deepcopy(out)
+            newout["type"] = {"type": "array", "items": out["type"]}
+            self.outputports.append(newout)
+        self.tool = {"outputs": self.outputports}
 
-
-class WorkflowRunner(object):
-    def __init__(self, path):
-        nm = NamespaceManager(Graph())
-        nm.bind('cwl', CWL)
-        nm.bind('wfd', WFD)
-        nm.bind('prov', PROV)
-        nm.bind('dct', DCT)
-        nm.bind('cnt', CNT)
-        self.g = Graph(namespace_manager=nm)
-        self.wf_iri = None
-        self.act_iri = None
-        self._load(path)
-
-    def _load(self, path):
-        self.g.parse(path, format='json-ld')
-        self.wf_iri = URIRef('file://' + path)  # TODO: Find a better way to do this
-        self.g.add([self.wf_iri, RDF.type, WFD.Process])
-        for sp in self.g.objects(self.wf_iri, WFD.hasSubProcess):
-            self.g.add([sp, RDF.type, WFD.Process])
-            tool = self.g.value(sp, CWL.hasImplementation)
-            log.debug('Loading reference %s', tool)
-            self.g.parse(tool, format='json-ld')
-
-    def start(self, proc_iri=None):
-        main_act = False
-        if not proc_iri:
-            proc_iri = self.wf_iri
-            main_act = True
-        proc_iri = URIRef(proc_iri)
-        iri = self.iri_for_activity(proc_iri)
-        log.debug('Starting %s', iri)
-        self.g.add([iri, RDF.type, CWL.Activity])
-        self.g.add([iri, CWL.activityFor, proc_iri])
-        self.g.add([iri, PROV.startedAtTime, Literal(datetime.now(), datatype=XSD.datetime)])
-        if main_act:
-            self.act_iri = iri
-        else:
-            self.g.add([self.act_iri, DCT.hasPart, iri])
-            for k, v in Process(self.g, proc_iri).input_values:
-                val = self.g.value(v)
-                log.debug('Value on %s is %s', k, val.toPython())
-        return iri
-
-    def end(self, act_iri):
-        act_iri = URIRef(act_iri)
-        self.g.add([act_iri, PROV.endedAtTime, Literal(datetime.now(), datatype=XSD.datetime)])
-
-    def iri_for_activity(self, process_iri):
-        sep = '/' if '#' in process_iri else '#'
-        return URIRef(process_iri + sep + '__activity__')  # TODO: Better IRIs
-
-    def iri_for_value(self, port_iri):
-        return URIRef(port_iri + '/__value__')  # TODO: Better IRIs
-
-    def queued(self):
-        ps = [Process(self.g, iri) for iri in self.g.subjects(RDF.type, CWL.Process)]
-        return [p for p in ps if p.has_prereqs and not p.started]
-
-    def set_value(self, port_iri, value, creator_iri=None):
-        if not port_iri.startswith(self.wf_iri):
-            port_iri = self.wf_iri + '#' + port_iri
-        port_iri = URIRef(port_iri)
-        iri = self.iri_for_value(port_iri)
-        set_value(self.g, iri, value)
-        self.g.add([iri, RDF.type, CWL.Value])
-        self.g.add([iri, CWL.producedByPort, URIRef(port_iri)])
-        if creator_iri:
-            self.g.add([iri, PROV.wasGeneratedBy, URIRef(creator_iri)])
-        return iri
-
-    def _depth_mismatch_port(self, proc, inputs):
-        depth_of = lambda x: 1 if isinstance(x, list) else 0  # TODO: fixme
-        incoming = {k: depth_of(v) for k, v in inputs.d.iteritems()}
-        expected = {k: self.g.value(k, CWL.hasDepth).toPython() for k in proc.inputs}
-        result = None
-        for k, v in incoming.iteritems():
-            if expected[k] != v:
-                if result:
-                    log.error('\nIncoming: %s\nExpected: %s', incoming, expected)
-                    raise Exception('More than one port has mismatching depth.')
-                if incoming[k] < expected[k]:
-                    raise Exception('depth(incoming) < depth(expected); Wrapping must be done explicitly.')
-                if incoming[k] - expected[k] > 1:
-                    raise NotImplementedError('Only handling one nesting level at the moment.')
-                result = k
-        return result
-
-    def run_component(self, tool, job):
-        cmp_type = self.g.value(tool, RDF.type)
-        if cmp_type == CWL.SimpleTransformTool:
-            return self.run_script(tool, job)
-        raise Exception('Unrecognized component type: %s' % cmp_type)
-
-    def run_workflow(self):
-        self.start()
-        while self.queued():
-            act = self.start(self.queued()[0].iri)
-            proc = Process(self.g, self.g.value(act, CWL.activityFor))
-            tool = self.g.value(proc.iri, CWL.hasImplementation)
-            inputs = Inputs(self.g, proc.input_values)  # TODO: propagate desc<->impl
-            dmp = self._depth_mismatch_port(proc, inputs)
-            if not dmp:
-                job = {'inputs': inputs.to_dict()}
-                outputs = self.run_component(tool, job)
-            else:
-                jobs, outputs = [], defaultdict(list)
-                for i in inputs[dmp]:
-                    inp_copy = deepcopy(inputs)
-                    inp_copy.d[dmp] = i
-                    jobs.append({'inputs': inp_copy.to_dict()})
-                for job in jobs:
-                    outs = self.run_component(tool, job)
-                    for k, v in outs.iteritems():
-                        outputs[k].append(v)
-            for k, v in outputs.iteritems():
-                self.set_value(proc.iri + '/' + k, v, act)
-            self.end(act)
-        self.end(self.act_iri)
-        outputs = dict(self.g.query('''
-        select ?port ?val
-        where {
-            <%s> wfd:hasOutput ?port .
-            ?link   wfd:hasSink ?port ;
-                    wfd:hasSource ?src .
-            ?val cwl:producedByPort ?src .
-        }
-        ''' % self.wf_iri))
-        return {k: get_value(self.g, v) for k, v in outputs.iteritems()}
-
-    def run_script(self, tool, job):
-        expr = self.g.value(self.g.value(tool, CWL.hasScript)).toPython()
-        log.debug('Running expr %s\nJob: %s', expr, job)
-        result = jseval(job, expr)
-        logging.debug('Result: %s', result)
-        return result
-
-
-def aplusbtimesc(wf_name, a, b, c):
-    print '\n\n--- %s ---\n\n' % wf_name
-    path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../examples/' + wf_name))
-    rnr = WorkflowRunner(path)
-    rnr.set_value('a', a)
-    rnr.set_value('b', b)
-    rnr.set_value('c', c)
-    outs = rnr.run_workflow()
-    assert outs
-    print '\nDone. Workflow outputs:'
-    for k, v in outs.iteritems():
-        print k, v
-        assert v == (a+b)*c
-    return rnr
-
-
-def count_lines():
-    examples = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../examples'))
-    wf_path = os.path.join(examples, 'wf-count-lines.json')
-    job_path = os.path.join(examples, 'wf-count-lines-job.json')
-    with open(job_path) as fp:
-        inputs = json.load(fp)['inputs']
-    rnr = WorkflowRunner(wf_path)
-    for k, v in inputs.iteritems():
-        rnr.set_value(k, v)
-    print rnr.run_workflow()
-    return rnr
-
-
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG)
-    # aplusbtimesc('wf_simple.json', 2, 3, 4)
-    # aplusbtimesc('wf_lists.json', 2, 3, 4)
-    # aplusbtimesc('wf_map.json', 2, 3, 4)
-    count_lines()
+    def job(self, joborder, basedir, **kwargs):
+        jobs = []
+        for fn in joborder[self.fanout_key]:
+            jo = copy.copy(joborder)
+            jo[self.fanout_key] = fn
+            jobs.append(self.process.job(jo, basedir, **kwargs))
+        return FanoutJob(self.outputports, jobs)

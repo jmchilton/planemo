@@ -10,7 +10,7 @@ import requests
 import urlparse
 import functools
 from pathmapper import PathMapper, DockerPathMapper
-from job import Job
+from job import CommandLineJob
 from flatten import flatten
 
 from jsonschema.validators import Draft4Validator
@@ -290,7 +290,7 @@ class Tool(object):
 
         referenced_files = filter(lambda a: a is not None, flatten(map(lambda a: builder.find_files(a, joborder), adapters)))
 
-        j = Job()
+        j = CommandLineProcess()
         j.joborder = joborder
         j.container = None
 
@@ -335,7 +335,7 @@ class Tool(object):
         j.command_line = flatten(map(lambda a: builder.adapt(a, joborder, d.mapper), adapters))
 
         j.pathmapper = d
-        j.collect_outputs = functools.partial(self.collect_outputs, self.tool["outputs"], joborder)
+        j.collect_outputs = functools.partial(self.collect_outputs, self.tool.get("outputs", {}), joborder)
 
         return j
 

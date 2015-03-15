@@ -1,3 +1,4 @@
 import main
+import sys
 
-main.main()
+sys.exit(main.main())

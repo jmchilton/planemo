@@ -23,9 +23,12 @@
     "map": "avro:map",
     "File": "cwl:File",
 
+    "id": "@id",
+    "class": "@type",
+
     "Expression": "cwl:Expression",
-    "expressionType": "@type",
-    "ref": "@id",
+    "ExpressionTool": "cwl:ExpressionTool",
+    "script":"cwl:expressionProcess",
 
     "position": "cwl:position",
     "prefix": "cwl:prefix",
@@ -35,7 +38,6 @@
     "glob": "cwl:glob",
 
     "name": "avro:name",
-    "port": "@id",
     "type": {
         "@id": "avro:type",
         "@type": "@vocab"
@@ -56,9 +58,9 @@
         "@id": "avro:values",
         "@type": "@vocab"
     },
-    "binding": "cwl:binding",
-
-    "requirementType": "@type",
+    "commandLineBinding": "cwl:commandLineBinding",
+    "outputBinding": "cwl:outputBinding",
+    "default": "cwl:default",
 
     "CommandLineTool": "cwl:CommandLineTool",
     "baseCommand": {
@@ -80,11 +82,15 @@
     "fileDefs": "cwl:fileDefs",
 
     "filename": "cwl:filename",
-    "javascript": "cwl:JavascriptExpression",
+    "JavascriptExpression": "cwl:JavascriptExpression",
+    "invoke": {
+        "@id": "cwl:invoke",
+        "@container": "@list"
+    },
 
-    "DockerImage": "cwl:DockerImage",
+    "DockerRequirement": "cwl:DockerRequirement",
     "dockerPull": "cwl:dockerPull",
-    "dockerImport": "cwl:dockerImport",
+    "dockerImport": "cwl:dockerLoad",
     "dockerImageId": "cwl:dockerImageId",
 
     "CPURequirement": "cwl:CPURequirement",
@@ -93,20 +99,21 @@
     "MemoryRequirement": "cwl:MemoryRequirement",
     "memoryInMiB": "cwl:memoryInMiB",
 
-
-    "Workflow": "cwl:Workflow",
-    "dataLinks": "wfdesc:hasDataLink",
-    "source": "wfdesc:hasSource",
-    "destination": "wfdesc:hasSink",
     "steps": "wfdesc:hasSubProcess",
-
-    "app": {
-        "@id": "cwl:hasImplementation",
+    "impl": {
+        "@id": "cwl:processImplementation",
         "@type": "@id"
     },
-    "impl": {
-        "@id": "cwl:linksToPort",
+    "def": {
+        "@id": "cwl:parameterDefinition",
+        "@type": "@id"
+    },
+    "source": {
+        "@id": "wfdesc:hasSource",
+        "@type":"@id"
+    },
+    "connect": {
+        "@reverse": "wfdesc:hasSink",
         "@type": "@id"
     }
-
 }

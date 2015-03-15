@@ -7,115 +7,20 @@ import functools
 import os
 from pathmapper import PathMapper, DockerPathMapper
 import sandboxjs
-from job import Job
+from job import CommandLineJob
+import yaml
+import glob
+import logging
+import hashlib
+import random
+from process import Process
+import validate
 
-TOOL_CONTEXT_URL = "https://raw.githubusercontent.com/common-workflow-language/common-workflow-language/draft-2-pa/schemas/draft-2/context.json"
+_logger = logging.getLogger("cwltool")
+
+CONTENT_LIMIT = 1024 * 1024
 
 module_dir = os.path.dirname(os.path.abspath(__file__))
-
-class ValidationException(Exception):
-    pass
-
-def validate(expected_schema, datum):
-    try:
-        return validate_ex(expected_schema, datum)
-    except ValidationException:
-        return False
-
-INT_MIN_VALUE = -(1 << 31)
-INT_MAX_VALUE = (1 << 31) - 1
-LONG_MIN_VALUE = -(1 << 63)
-LONG_MAX_VALUE = (1 << 63) - 1
-
-def validate_ex(expected_schema, datum):
-    """Determine if a python datum is an instance of a schema."""
-    schema_type = expected_schema.type
-    if schema_type == 'null':
-        if datum is None:
-            return True
-        else:
-            raise ValidationException("`%s` is not null" % datum)
-    elif schema_type == 'boolean':
-        if isinstance(datum, bool):
-            return True
-        else:
-            raise ValidationException("`%s` is not boolean" % datum)
-    elif schema_type == 'string':
-        if isinstance(datum, basestring):
-            return True
-        else:
-            raise ValidationException("`%s` is not string" % datum)
-    elif schema_type == 'bytes':
-        if isinstance(datum, str):
-            return True
-        else:
-            raise ValidationException("`%s` is not bytes" % datum)
-    elif schema_type == 'int':
-        if ((isinstance(datum, int) or isinstance(datum, long))
-            and INT_MIN_VALUE <= datum <= INT_MAX_VALUE):
-            return True
-        else:
-            raise ValidationException("`%s` is not int" % datum)
-    elif schema_type == 'long':
-        if ((isinstance(datum, int) or isinstance(datum, long))
-            and LONG_MIN_VALUE <= datum <= LONG_MAX_VALUE):
-            return True
-        else:
-            raise ValidationException("`%s` is not long" % datum)
-    elif schema_type in ['float', 'double']:
-        if (isinstance(datum, int) or isinstance(datum, long)
-            or isinstance(datum, float)):
-            return True
-        else:
-            raise ValidationException("`%s` is not float or double" % datum)
-    elif schema_type == 'fixed':
-        if isinstance(datum, str) and len(datum) == expected_schema.size:
-            return True
-        else:
-            raise ValidationException("`%s` is not fixed" % datum)
-    elif schema_type == 'enum':
-        if datum in expected_schema.symbols:
-            return True
-        else:
-            raise ValidationException("`%s`\n is not a valid enum symbol, expected\n %s" % (pprint.pformat(datum), pprint.pformat(expected_schema.symbols)))
-    elif schema_type == 'array':
-        if isinstance(datum, list):
-            for i, d in enumerate(datum):
-                try:
-                    validate_ex(expected_schema.items, d)
-                except ValidationException as v:
-                    raise ValidationException("%s\n while validating item at position %i `%s`" % (v, i, d))
-            return True
-        else:
-            raise ValidationException("`%s`\n is not a list, expected list of\n %s" % (pprint.pformat(datum), expected_schema.items))
-    elif schema_type == 'map':
-        if (isinstance(datum, dict) and
-            False not in [isinstance(k, basestring) for k in datum.keys()] and
-            False not in [validate(expected_schema.values, v) for v in datum.values()]):
-            return True
-        else:
-            raise ValidationException("`%s` is not a valid map value, expected\n %s" % (pprint.pformat(datum), pprint.pformat(expected_schema.values)))
-    elif schema_type in ['union', 'error_union']:
-        if True in [validate(s, datum) for s in expected_schema.schemas]:
-            return True
-        else:
-            errors = []
-            for s in expected_schema.schemas:
-                try:
-                    validate_ex(s, datum)
-                except ValidationException as e:
-                    errors.append(str(e))
-            raise ValidationException("`%s`\n is not valid, expected one of:\n\n%s\n\n the individual errors are:\n%s" % (pprint.pformat(datum), ",\n\n  ".join([str(s) for s in expected_schema.schemas]), ";\n\n".join(errors)))
-    elif schema_type in ['record', 'error', 'request']:
-        if not isinstance(datum, dict):
-            raise ValidationException("`%s`\n is not a dict" % pprint.pformat(datum))
-        try:
-            for f in expected_schema.fields:
-                validate_ex(f.type, datum.get(f.name))
-            return True
-        except ValidationException as v:
-            raise ValidationException("%s\n while validating field `%s`" % (v, f.name))
-    raise ValidationException("Unrecognized schema_type %s" % schema_type)
 
 class Builder(object):
     def jseval(self, expression, context):
@@ -129,11 +34,17 @@ class Builder(object):
 
     def do_eval(self, ex, context=None):
         if isinstance(ex, dict):
-            if ex.get("expressionType") == "javascript":
-                return self.jseval(ex["value"], context)
-            elif ex.get("ref"):
-                with open(os.path.join(self.basedir, ex["ref"]), "r") as f:
-                    return f.read()
+            if ex.get("class") == "JavascriptExpression":
+                if "value" in ex:
+                    return self.jseval(ex["value"], context)
+                elif "invoke" in ex:
+                    return self.jseval(ex["invoke"], context)
+            elif ex.get("id"):
+                if ex["id"].startswith("#"):
+                    return self.job[ex["id"][1:]]
+                else:
+                    with open(os.path.join(self.basedir, ex["id"]), "r") as f:
+                        return f.read()
         else:
             return ex
 
@@ -147,7 +58,7 @@ class Builder(object):
                 if t in self.schemaDefs:
                     t = self.schemaDefs[t]
                 avsc = avro.schema.make_avsc_object(t, None)
-                if validate(avsc, datum):
+                if validate.validate(avsc, datum):
                     if isinstance(t, basestring):
                         t = {"type": t}
                     bindings.extend(self.bind_input(t, datum))
@@ -178,17 +89,20 @@ class Builder(object):
 
             if schema["type"] == "array":
                 for n, item in enumerate(datum):
-                    b = self.bind_input({"type": schema["items"], "binding": schema.get("binding")}, item)
+                    b = self.bind_input({"type": schema["items"], "commandLineBinding": schema.get("commandLineBinding")}, item)
                     for bi in b:
                         bi["position"].insert(0, n)
                     bindings.extend(b)
 
             if schema["type"] == "File":
-                self.files.append(datum["path"])
+                if schema.get("loadContents"):
+                    with open(os.path.join(self.basedir, datum["path"]), "rb") as f:
+                        datum["contents"] = f.read(CONTENT_LIMIT)
+                self.files.append(datum)
 
         b = None
-        if "binding" in schema and isinstance(schema["binding"], dict):
-            b = copy.copy(schema["binding"])
+        if "commandLineBinding" in schema and isinstance(schema["commandLineBinding"], dict):
+            b = copy.copy(schema["commandLineBinding"])
 
             if b.get("position"):
                 b["position"] = [b["position"]]
@@ -200,9 +114,8 @@ class Builder(object):
                 bi["position"] = b["position"] + bi["position"]
 
             if "valueFrom" in b:
-                b["valueFrom"] = self.do_eval(b["valueFrom"], datum)
-            else:
-                b["valueFrom"] = datum
+                b["do_eval"] = b["valueFrom"]
+            b["valueFrom"] = datum
 
             if schema["type"] == "File":
                 b["is_file"] = True
@@ -212,6 +125,9 @@ class Builder(object):
 
     def generate_arg(self, binding):
         value = binding["valueFrom"]
+        if "do_eval" in binding:
+            value = self.do_eval(binding["do_eval"], value)
+
         prefix = binding.get("prefix")
         sep = binding.get("separator")
 
@@ -219,18 +135,20 @@ class Builder(object):
         if isinstance(value, list):
             if binding.get("itemSeparator"):
                 l = [binding["itemSeparator"].join([str(v) for v in value])]
+            elif binding.get("do_eval"):
+                return ([prefix] if prefix else []) + value
             elif prefix:
-                return [prefix]
-        elif binding.get("is_file"):
-            l = [self.pathmapper.mapper(value["path"])]
-        elif isinstance(value, dict):
-            if prefix:
-                return [prefix]
-        elif isinstance(value, bool):
-            if value and prefix:
                 return [prefix]
             else:
                 return []
+        elif binding.get("is_file"):
+            l = [self.pathmapper.mapper(value["path"])]
+        elif isinstance(value, dict):
+            return [prefix] if prefix else []
+        elif value is True and prefix:
+            return [prefix]
+        elif value is False or value is None:
+            return []
         else:
             l = [value]
 
@@ -243,159 +161,200 @@ class Builder(object):
 
         return [a for a in args if a is not None]
 
-class Tool(object):
-    def __init__(self, toolpath_object):
-        self.names = avro.schema.Names()
-        cwl_avsc = os.path.join(module_dir, 'schemas/draft-2/cwl.avsc')
-        with open(cwl_avsc) as f:
-            j = json.load(f)
-            for t in j:
-                avro.schema.make_avsc_object(t, self.names)
 
-        self.tool = toolpath_object
-        if self.tool.get("@context") != TOOL_CONTEXT_URL:
-            raise Exception("Missing or invalid '@context' field in tool description document, must be %s" % TOOL_CONTEXT_URL)
-
-        # Validate tool documument
-        validate_ex(self.names.get_name("CommandLineTool", ""), self.tool)
-
-        # Import schema defs
-        self.schemaDefs = {}
-        if self.tool.get("schemaDefs"):
-            for i in self.tool["schemaDefs"]:
-                avro.schema.make_avsc_object(i, self.names)
-                self.schemaDefs[i["name"]] = i
-
-        # Build record schema from inputs
-        self.inputs_record_schema = {"name": "input_record_schema", "type": "record", "fields": []}
-        for i in self.tool["inputs"]:
-            c = copy.copy(i)
-            c["name"] = c["port"][1:]
-            del c["port"]
-            self.inputs_record_schema["fields"].append(c)
-        avro.schema.make_avsc_object(self.inputs_record_schema, self.names)
-
-        self.outputs_record_schema = {"name": "outputs_record_schema", "type": "record", "fields": []}
-        for i in self.tool["outputs"]:
-            c = copy.copy(i)
-            c["name"] = c["port"][1:]
-            del c["port"]
-            self.outputs_record_schema["fields"].append(c)
-        avro.schema.make_avsc_object(self.outputs_record_schema, self.names)
-
-    def job(self, joborder, basedir, use_container=True):
+class Tool(Process):
+    def _init_job(self, joborder, basedir):
         # Validate job order
-        validate_ex(self.names.get_name("input_record_schema", ""), joborder)
+        validate.validate_ex(self.names.get_name("input_record_schema", ""), joborder)
 
         builder = Builder()
-        builder.job = joborder
+        builder.job = copy.deepcopy(joborder)
         builder.jslib = ''
         builder.basedir = basedir
         builder.files = []
         builder.bindings = []
         builder.schemaDefs = self.schemaDefs
 
-        if isinstance(self.tool["baseCommand"], list):
-            for n, b in enumerate(self.tool["baseCommand"]):
-                builder.bindings.append({
-                    "position": [-1000000, n],
-                    "valueFrom": b
-                })
-        else:
-            builder.bindings.append({
-                "position": [-1000000],
-                "valueFrom": self.tool["baseCommand"]
-            })
-
         if self.tool.get("expressionDefs"):
             for ex in self.tool['expressionDefs']:
                 builder.jslib += builder.do_eval(ex) + "\n"
 
+        builder.bindings.extend(builder.bind_input(self.inputs_record_schema, builder.job))
+
+        return builder
+
+
+class ExpressionTool(Tool):
+    def __init__(self, toolpath_object):
+        super(ExpressionTool, self).__init__(toolpath_object, "ExpressionTool")
+
+    class ExpressionJob(object):
+        def run(self, outdir=None, **kwargs):
+            return (outdir, self.builder.do_eval(self.script))
+
+    def job(self, joborder, basedir, **kwargs):
+        builder = self._init_job(joborder, basedir)
+
+        j = ExpressionTool.ExpressionJob()
+        j.builder = builder
+        j.script = self.tool["script"]
+
+        return j
+
+def aslist(l):
+    if isinstance(l, list):
+        return l
+    else:
+        return [l]
+
+class CommandLineTool(Tool):
+    def __init__(self, toolpath_object):
+        super(CommandLineTool, self).__init__(toolpath_object, "CommandLineTool")
+
+    def job(self, joborder, basedir, use_container=True):
+        builder = self._init_job(joborder, basedir)
+
+        if self.tool["baseCommand"]:
+            for n, b in enumerate(aslist(self.tool["baseCommand"])):
+                builder.bindings.append({
+                    "position": [-1000000, n],
+                    "valueFrom": b
+                })
+
         if self.tool.get("arguments"):
             for i, a in enumerate(self.tool["arguments"]):
-                a = copy.copy(a)
-                if a.get("position"):
-                    a["position"] = [a["position"], i]
+                if isinstance(a, dict):
+                    a = copy.copy(a)
+                    if a.get("position"):
+                        a["position"] = [a["position"], i]
+                    else:
+                        a["position"] = [0, i]
+                    a["do_eval"] = a["valueFrom"]
+                    a["valueFrom"] = None
+                    builder.bindings.append(a)
                 else:
-                    a["position"] = [0, i]
-                a["valueFrom"] = builder.do_eval(a["valueFrom"])
-                builder.bindings.append(a)
+                    builder.bindings.append({
+                        "position": [0, i],
+                        "valueFrom": a
+                    })
 
-        builder.bindings.extend(builder.bind_input(self.inputs_record_schema, joborder))
         builder.bindings.sort(key=lambda a: a["position"])
 
-        #pprint.pprint(builder.bindings)
-        #pprint.pprint(builder.files)
+        _logger.debug(pprint.pformat(builder.bindings))
+        _logger.debug(pprint.pformat(builder.files))
 
-        j = Job()
-        j.joborder = joborder
+        reffiles = [f["path"] for f in builder.files]
+
+        j = CommandLineJob()
+        j.joborder = builder.job
         j.container = None
+        j.stdin = None
+        j.stdout = None
         builder.pathmapper = None
 
         if self.tool.get("stdin"):
             j.stdin = builder.do_eval(self.tool["stdin"])
-            builder.files.append(j.stdin)
-        else:
-            j.stdin = None
+            if isinstance(j.stdin, dict):
+                j.stdin = j.stdin["path"]
+            reffiles.append(j.stdin)
 
         if self.tool.get("stdout"):
-            j.stdout = builder.do_eval(self.tool["stdout"])
+            if isinstance(self.tool["stdout"], dict) and "id" in self.tool["stdout"]:
+                for out in self.tool.get("outputs", []):
+                    if out["id"] == self.tool["stdout"]["id"]:
+                        filename = self.tool["stdout"]["id"][1:]
+                        j.stdout = filename
+                        out["outputBinding"] = out.get("outputBinding", {})
+                        out["outputBinding"]["glob"] = filename
+                if not j.stdout:
+                    raise Exception("stdout refers to invalid output")
+            else:
+                j.stdout = builder.do_eval(self.tool["stdout"])
             if os.path.isabs(j.stdout):
                 raise Exception("stdout must be a relative path")
-        else:
-            j.stdout = None
 
         j.generatefiles = {}
         for t in self.tool.get("fileDefs", []):
             j.generatefiles[t["filename"]] = builder.do_eval(t["value"])
 
-        for r in self.tool.get("hints", []):
-            if r["requirementType"] == "DockerImage" and use_container:
+        reqsAndHints = self.tool.get("requirements", []) + self.tool.get("hints", [])
+        for r in reqsAndHints:
+            if r["class"] == "DockerRequirement" and use_container:
                 j.container = {}
                 j.container["type"] = "docker"
                 if "dockerPull" in r:
                     j.container["pull"] = r["dockerPull"]
-                if "dockerImport" in r:
-                    j.container["import"] = r["dockerImport"]
+                if "dockerLoad" in r:
+                    if r["dockerLoad"].startswith("http"):
+                        j.container["load"] = r["dockerLoad"]
+                    else:
+                        j.container["load"] = os.path.join(basedir, r["dockerLoad"])
                 if "dockerImageId" in r:
                     j.container["imageId"] = r["dockerImageId"]
                 else:
                     j.container["imageId"] = r["dockerPull"]
-                builder.pathmapper = DockerPathMapper(builder.files, basedir)
+                builder.pathmapper = DockerPathMapper(reffiles, basedir)
 
         if builder.pathmapper is None:
-            builder.pathmapper = PathMapper(builder.files, basedir)
+            builder.pathmapper = PathMapper(reffiles, basedir)
+
+        for f in builder.files:
+            f["path"] = builder.pathmapper.mapper(f["path"])
+
         j.command_line = flatten(map(builder.generate_arg, builder.bindings))
 
         if j.stdin:
             j.stdin = j.stdin if os.path.isabs(j.stdin) else os.path.join(basedir, j.stdin)
 
         j.pathmapper = builder.pathmapper
-        j.collect_outputs = functools.partial(self.collect_outputs, self.tool["outputs"], joborder)
+        j.collect_outputs = functools.partial(self.collect_output_ports, self.tool["outputs"], builder)
 
         return j
 
+    def collect_output_ports(self, ports, builder, outdir):
+        custom_output = os.path.join(outdir, "output.cwl.json")
+        if os.path.exists(custom_output):
+            outputdoc = yaml.load(custom_output)
+            validate.validate_ex(self.names.get_name("output_record_schema", ""), outputdoc)
+            return outputdoc
+        ret = {port["id"][1:]: self.collect_output(port, builder, outdir) for port in ports}
+        return ret if ret is not None else {}
 
-    def collect_outputs(self, schema, joborder, outdir):
+    def collect_output(self, schema, builder, outdir):
         r = None
-        if isinstance(schema, dict):
-            if "binding" in schema:
-                binding = schema["binding"]
-                if "glob" in binding:
-                    r = [{"path": g} for g in glob.glob(os.path.join(outdir, binding["glob"]))]
-                    # if not ("type" in schema and schema["type"] == "array"):
-                    #     if r:
-                    #         r = r[0]
-                    #     else:
-                    #         r = None
-                #if "value" in binding:
-                #    r = draft1tool.resolve_eval(joborder, binding["value"])
-            # if not r and "properties" in schema:
-            #     r = {}
-            #     for k, v in schema["properties"].items():
-            #         out = self.collect_outputs(v, joborder, outdir)
-            #         if out:
-            #             r[k] = out
+        if "outputBinding" in schema:
+            binding = schema["outputBinding"]
+            if "glob" in binding:
+                r = [{"path": g} for g in glob.glob(os.path.join(outdir, binding["glob"]))]
+                for files in r:
+                    checksum = hashlib.sha1()
+                    with open(files["path"], "rb") as f:
+                        contents = f.read(CONTENT_LIMIT)
+                        if binding.get("loadContents"):
+                            files["contents"] = contents
+                        filesize = 0
+                        while contents != "":
+                            checksum.update(contents)
+                            filesize += len(contents)
+                            contents = f.read(1024*1024)
+                    files["checksum"] = "sha1$%s" % checksum.hexdigest()
+                    files["size"] = filesize
 
+                if schema["type"] == "array" and schema["items"] == "File":
+                    pass
+                elif schema["type"] == "File":
+                    r = r[0] if r else None
+                elif binding.get("loadContents"):
+                    r = [v["contents"] for v in r]
+                else:
+                    r = None
+
+            if "valueFrom" in binding:
+                r = builder.do_eval(binding["valueFrom"], r)
+
+        if not r and schema["type"] == "record":
+            r = {}
+            for f in schema["fields"]:
+                r[f["name"]] = self.collect_output(f, builder, outdir)
 
         return r

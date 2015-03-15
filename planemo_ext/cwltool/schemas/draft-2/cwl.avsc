@@ -23,7 +23,19 @@
         "type": "record",
         "name": "File",
         "fields": [
-            { "name": "path", "type": "string" }
+            { "name": "path", "type": "string" },
+            { "name": "checksum", "type": ["null", "string"] },
+            { "name": "size", "type": ["null", "long"] },
+            {
+                "name": "secondaryFiles",
+                "type": [
+                    "null",
+                    {
+                        "type": "array",
+                        "items": "File"
+                    }
+                ]
+            }
         ]
     },
 
@@ -31,7 +43,7 @@
         "type": "record",
         "name": "Expression",
         "fields": [
-            { "name": "expressionType", "type": "string" }
+            { "name": "class", "type": "string" }
         ]
     },
 
@@ -39,20 +51,66 @@
         "type": "record",
         "name": "Ref",
         "fields": [
-            { "name": "ref", "type": "string" }
+            { "name": "id", "type": "string" }
         ]
     },
 
     {
         "type": "record",
-        "name": "Binding",
+        "name": "CommandLineBinding",
         "fields": [
             { "name": "position", "type": ["null", "int"] },
             { "name": "prefix", "type": [ "null", "string"] },
             { "name": "separator", "type": ["null", "string"] },
             { "name": "itemSeparator", "type": ["null", "string"] },
             { "name": "valueFrom", "type": ["null", "Expression", "Ref"] },
-            { "name": "glob", "type": ["null", "string"] }
+            { "name": "loadContents", "type": ["null", "boolean"] }
+        ]
+    },
+
+    {
+        "type": "record",
+        "name": "OutputBinding",
+        "fields": [
+            { "name": "valueFrom", "type": ["null", "Expression", "Ref"] },
+            { "name": "glob", "type": ["null", "string"] },
+            { "name": "loadContents", "type": ["null", "boolean"] }
+        ]
+    },
+
+    {
+        "type": "record",
+        "name": "DataLink",
+        "fields": [
+            { "name": "source", "type": "string" }
+        ]
+    },
+
+    {
+        "type": "record",
+        "name": "ExternallyDefinedInput",
+        "fields": [
+            { "name": "def", "type": "string" },
+            {
+                "name": "connect",
+                "type": [
+                    "DataLink",
+                    {
+                        "type": "array",
+                        "items": "DataLink"
+                    }
+                ]
+            },
+            { "name": "id", "type": ["null", "string"] }
+        ]
+    },
+
+    {
+        "type": "record",
+        "name": "ExternallyDefinedOutput",
+        "fields": [
+            { "name": "def", "type": "string" },
+            { "name": "id", "type": "string" }
         ]
     },
 
@@ -61,7 +119,7 @@
         "name": "Schema",
         "fields": [
             { "name": "name", "type": ["null", "string"] },
-            { "name": "port", "type": ["null", "string"] },
+            { "name": "id", "type": ["null", "string"] },
             {
                 "name": "type",
                 "type": [
@@ -121,8 +179,23 @@
                 ]
             },
             {
-                "name": "binding",
-                "type": [ "null", "Binding" ]
+                "name": "commandLineBinding",
+                "type": [ "null", "CommandLineBinding" ]
+            },
+            {
+                "name": "outputBinding",
+                "type": [ "null", "OutputBinding" ]
+            },
+            {
+                "name": "connect",
+                "type": [
+                    "null",
+                    "DataLink",
+                    {
+                        "type": "array",
+                        "items": "DataLink"
+                    }
+                ]
             }
         ]
     },
@@ -131,7 +204,7 @@
         "type": "record",
         "name": "ToolDependency",
         "fields": [
-            { "name": "requirementType", "type": "string" }
+            { "name": "class", "type": "string" }
         ]
     },
 
@@ -167,17 +240,17 @@
                     "null",
                     {
                         "type": "array",
-                        "items": "Binding"
+                        "items": ["string", "CommandLineBinding"]
                     }
                 ]
             },
             {
                 "name": "stdin",
-                "type": ["null", "Expression"]
+                "type": ["null", "Expression", "Ref"]
             },
             {
                 "name": "stdout",
-                "type": ["null", "string", "Expression"]
+                "type": ["null", "string", "Expression", "Ref"]
             },
             {
                 "name": "inputs",
@@ -240,6 +313,122 @@
                     {
                         "type": "array",
                         "items": "FileDef"
+                    }
+                ]
+            }
+        ]
+    },
+
+    {
+        "type": "record",
+        "name": "ExpressionTool",
+        "fields": [
+            {
+                "name": "script",
+                "type": "Expression"
+            },
+            {
+                "name": "inputs",
+                "type": {
+                    "type": "array",
+                    "items": "Schema"
+                }
+            },
+            {
+                "name": "outputs",
+                "type": {
+                    "type": "array",
+                    "items": "Schema"
+                }
+            },
+            {
+                "name": "schemaDefs",
+                "type": [
+                    "null",
+                    {
+                        "type": "array",
+                        "items": "Schema"
+                    }
+                ]
+            },
+            {
+                "name": "expressionDefs",
+                "type": [
+                    "null",
+                    {
+                        "type": "array",
+                        "items": ["string", "Ref"]
+                    }
+                ]
+            }
+        ]
+    },
+
+    {
+        "type": "record",
+        "name": "Process",
+        "fields": [
+            {
+                "name": "inputs",
+                "type": {
+                    "type": "array",
+                    "items": ["Schema", "ExternallyDefinedInput"]
+                }
+            },
+            {
+                "name": "outputs",
+                "type": {
+                    "type": "array",
+                    "items": ["Schema", "ExternallyDefinedOutput"]
+                }
+            },
+            {
+                "name": "schemaDefs",
+                "type": [
+                    "null",
+                    {
+                        "type": "array",
+                        "items": "Schema"
+                    }
+                ]
+            }
+        ]
+    },
+
+    {
+        "type": "record",
+        "name": "Workflow",
+        "fields": [
+            {
+                "name": "inputs",
+                "type": {
+                    "type": "array",
+                    "items": "Schema"
+                }
+            },
+            {
+                "name": "outputs",
+                "type": {
+                    "type": "array",
+                    "items": "Schema"
+                }
+            },
+            {
+                "name": "schemaDefs",
+                "type": [
+                    "null",
+                    {
+                        "type": "array",
+                        "items": "Schema"
+                    }
+                ]
+            },
+            {
+                "name": "steps",
+                "type": [
+                    {
+                        "type": "array",
+                        "items": ["Process"]
                     }
                 ]
             }

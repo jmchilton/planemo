@@ -11,7 +11,7 @@ cd "$PLANEMO_ROOT"
 # Update CWL external code.
 CWL_PATH="$EXTERN_DIR/cwltool"
 rm -rf /tmp/cwl
-git clone -b draft-2-pa git@github.com:common-workflow-language/common-workflow-language.git /tmp/cwl
+git clone -b master git@github.com:common-workflow-language/common-workflow-language.git /tmp/cwl
 rm -rf $CWL_PATH
 cp -r "/tmp/cwl/reference/cwltool" "$CWL_PATH"
 rm -rf "$CWL_PATH/schemas"

@@ -9,8 +9,9 @@ CWL_TOOLS_DIRECTORY = os.path.join(TESTS_DIRECTORY, "cwl_tools")
 
 
 def test_load():
-    parser.build_inputs(_cwl_tool_path("draft1/cat1-tool.json"))
-    parser.build_inputs(_cwl_tool_path("draft2/cat1-tool.cwl"))
+    print parser.build_inputs(_cwl_tool_path("draft1/cat1-tool.json"))
+    print parser.build_inputs(_cwl_tool_path("draft2/cat1-tool.cwl"))
+    assert False
 
 
 def _cwl_tool_path(path):

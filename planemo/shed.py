@@ -401,7 +401,7 @@ def build_tarball(realized_path, **kwds):
     try:
         tar = tarfile.open(temp_path, "w:gz", dereference=True)
         try:
-            tar.add(realized_path, arcname=".", recursive=True)
+            tar.add(realized_path, arcname="", recursive=True)
         finally:
             tar.close()
     finally:

@@ -35,13 +35,17 @@ UNCACHED_VIRTUAL_ENV_COMMAND = "GALAXY_VIRTUAL_ENV=.venv"
 
 
 def setup_venv(ctx, kwds):
-    return shell_join(
-        locate_galaxy_virtualenv(ctx, kwds),
-        PRINT_VENV_COMMAND if ctx.verbose else None,
-        CREATE_COMMAND,
-        PRINT_VENV_COMMAND if ctx.verbose else None,
-        ACTIVATE_COMMAND,
-    )
+    if kwds.get("skip_venv", False):
+        setup_command = ""
+    else:
+        setup_command = shell_join(
+            locate_galaxy_virtualenv(ctx, kwds),
+            PRINT_VENV_COMMAND if ctx.verbose else None,
+            CREATE_COMMAND,
+            PRINT_VENV_COMMAND if ctx.verbose else None,
+            ACTIVATE_COMMAND,
+        )
+    return setup_command
 
 
 def locate_galaxy_virtualenv(ctx, kwds):

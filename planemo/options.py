@@ -42,6 +42,15 @@ def galaxy_root_option():
     )
 
 
+def galaxy_skip_venv_option():
+    return click.option(
+        "--skip_venv",
+        is_flag=True,
+        default=False,
+        help="Do not source or create a virtual environment for Galaxy.",
+    )
+
+
 def galaxy_sqlite_database_option():
     return click.option(
         "--galaxy_sqlite_database",
@@ -530,6 +539,7 @@ def galaxy_config_options():
 def galaxy_target_options():
     return _compose(
         galaxy_root_option(),
+        galaxy_skip_venv_option(),
         galaxy_sqlite_database_option(),
         install_galaxy_option(),
         no_cache_galaxy_option(),

@@ -20,7 +20,8 @@ from .exit_codes import (
 
 
 def communicate(cmds, **kwds):
-    info(cmds)
+    if isinstance(cmds, list):
+        cmds = " ".join(cmds)
     p = commands.shell_process(cmds, **kwds)
     if kwds.get("stdout", None) is None and commands.redirecting_io(sys=sys):
         output = commands.redirect_aware_commmunicate(p)

@@ -68,6 +68,8 @@ def run_cwltool(ctx, path, job_path, **kwds):
     if output_directory:
         args.append("--outdir")
         args.append(output_directory)
+    if kwds.get("no_container", False):
+        args.append("--no-container")
 
     args.extend([path, job_path])
     ctx.vlog("Calling cwltool with arguments %s" % args)

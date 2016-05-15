@@ -61,13 +61,13 @@ def _serve(ctx, runnables, **kwds):
         if port is None:
             port = network_util.get_free_port()
 
-        ctx.vlog("Waiting for service on (%s, %d)" % (host, port))
+        ctx.vlog("Waiting for service on (%s, %s)" % (host, port))
         assert network_util.wait_net_service(host, port)
         time.sleep(.1)
-        ctx.vlog("Waiting for service on (%s, %d)" % (host, port))
+        ctx.vlog("Waiting for service on (%s, %s)" % (host, port))
         assert network_util.wait_net_service(host, port)
         time.sleep(5)
-        ctx.vlog("Waiting for service on (%s, %d)" % (host, port))
+        ctx.vlog("Waiting for service on (%s, %s)" % (host, port))
         assert network_util.wait_net_service(host, port)
         config.install_workflows()
         return config

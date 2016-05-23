@@ -33,7 +33,7 @@ def skip_venv_option():
 def engine_option():
     return planemo_option(
         "--engine",
-        type=click.Choice(["galaxy", "cwltool"]),
+        type=click.Choice(["galaxy", "docker_galaxy", "cwltool"]),
         default="galaxy",
         use_global_config=True,
         help=("Select an engine to run tools and workflows using, defaults "
@@ -568,7 +568,7 @@ def docker_cmd_option():
 
 def docker_sudo_option():
     return planemo_option(
-        "--docker_sudo",
+        "--docker_sudo/--no_docker_sudo",
         is_flag=True,
         help="Flag to use sudo when running docker."
     )
@@ -868,6 +868,7 @@ def profile_option():
 def galaxy_serve_options():
     return _compose(
         galaxy_run_options(),
+        engine_option(),
         galaxy_config_options(),
         daemon_option(),
         pid_file_option(),

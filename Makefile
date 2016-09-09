@@ -88,6 +88,15 @@ _open-coverage: ## open coverage report using open
 
 coverage: _coverage-report open-coverage ## check code coverage quickly with the default Python
 
+ready-schema-docs:
+	python $(DOCS_DIR)/parse_gx_xsd.py > $(DOCS_DIR)/schema.md
+
+schema-html: ready-schema-docs
+	markdown $(DOCS_DIR)/schema.md > $(DOCS_DIR)/schema.html
+
+open-schema: schema-html
+	$(OPEN_RESOURCE) $(DOCS_DIR)/schema.html
+
 ready-docs:  ## rebuild docs folder ahead of running docs or lint-docs
 	rm -f $(DOCS_DIR)/$(SOURCE_DIR).rst
 	rm -f $(DOCS_DIR)/planemo_ext.rst

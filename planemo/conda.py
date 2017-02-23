@@ -28,10 +28,12 @@ def build_conda_context(ctx, **kwds):
     use_planemo_shell = kwds.get("use_planemo_shell_exec", True)
     ensure_channels = kwds.get("conda_ensure_channels", "")
     condarc_override = kwds.get("condarc", condarc_override_default)
+    use_local = kwds.get("conda_use_local", False)
     shell_exec = shell if use_planemo_shell else None
     conda_context = conda_util.CondaContext(conda_prefix=conda_prefix,
                                             ensure_channels=ensure_channels,
                                             condarc_override=condarc_override,
+                                            use_local=use_local,
                                             shell_exec=shell_exec)
     handle_auto_init = kwds.get("handle_auto_init", False)
     if handle_auto_init and not conda_context.is_installed():

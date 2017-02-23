@@ -446,6 +446,14 @@ def conda_debug_option():
     )
 
 
+def conda_use_local_option():
+    return planemo_option(
+        "--conda_use_local",
+        is_flag=True,
+        help="Use locally built packages while building Conda environments."
+    )
+
+
 def conda_ensure_channels_option():
     return planemo_option(
         "conda_ensure_channels",
@@ -880,6 +888,7 @@ def conda_target_options():
         conda_exec_option(),
         conda_debug_option(),
         conda_ensure_channels_option(),
+        conda_use_local_option(),
     )
 
 

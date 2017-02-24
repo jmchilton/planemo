@@ -12,6 +12,7 @@ from planemo.io import info, warn
 
 MESSAGE_ERROR_ALREADY_EXISTS = "conda_init failed - Conda appears to already be installed at '%s'"
 MESSAGE_ERROR_FAILED = "conda_init failed - failed to install to '%s'"
+MESSAGE_ERROR_CONDA_BUILD = "conda_init failed to install conda-build - Conda may be broken or lacking a package required by certain planemo features"
 MESSAGE_INSTALL_OKAY = "Conda installation succeeded - Conda is available at '%s'"
 
 
@@ -40,6 +41,14 @@ def cli(ctx, **kwds):
         if exit:
             warn(MESSAGE_ERROR_FAILED % conda_context.conda_exec)
         else:
-            info(MESSAGE_INSTALL_OKAY % conda_context.conda_exec)
+            exit = conda_util.install_conda_target(
+                conda_util.CondaTarget("conda-build"),
+                conda_context=conda_context,
+                skip_environment=True,
+            )
+            if exit:
+                warn(MESSAGE_ERROR_CONDA_BUILD)
+            else:
+                info(MESSAGE_INSTALL_OKAY % conda_context.conda_exec)
 
     ctx.exit(exit)

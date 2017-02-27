@@ -91,6 +91,12 @@ class LintTestCase(CliTestCase):
         self._check_exit_code(lint_cmd)
         lint_cmd = ["lint", "--conda_requirements", seqtk_seq_v6]
         self._check_exit_code(lint_cmd)
-        # Doesn't work, it seems to be missing?
-        # lint_cmd = ["lint", "--biocontainer_registered", bwa_no_reqs]
-        # self._check_exit_code(lint_cmd)
+        lint_cmd = ["lint", "--biocontainer_registered", seqtk_seq_v6]
+        self._check_exit_code(lint_cmd)
+
+    def test_lint_biocontainers_unionbedgraphs(self):
+        union_bedgraph = os.path.join(PROJECT_TEMPLATES_DIR, "union_bedgraph_complete", "unionBedGraphs.xml")
+        lint_cmd = ["lint", union_bedgraph]
+        self._check_exit_code(lint_cmd)
+        lint_cmd = ["lint", "--biocontainer_registered", union_bedgraph]
+        self._check_exit_code(lint_cmd)

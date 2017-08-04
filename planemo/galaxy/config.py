@@ -709,13 +709,18 @@ class BaseGalaxyConfig(GalaxyConfig):
 
     def install_workflows(self):
         for runnable in self.runnables:
-            if runnable.type.name == "galaxy_workflow":
-                self._install_workflow(runnable.path)
+            if runnable.type.name in ["galaxy_workflow", "cwl_workflow"]:
+                self._install_workflow(runnable)
 
-    def _install_workflow(self, path):
-        install_shed_repos(path, self.gi)
-        workflow = import_workflow(path, admin_gi=self.gi, user_gi=self.user_gi)
-        self._workflow_ids[path] = workflow["id"]
+    def _install_workflow(self, runnable):
+        install_shed_repos(runnable, self.gi)
+        # TODO: Allow serialization so this doesn't need to assume a
+        # shared filesystem with Galaxy server.
+        from_path = runnable.type.name == "cwl_workflow"
+        workflow = import_workflow(
+            runnable.path, admin_gi=self.gi, user_gi=self.user_gi, from_path=from_path
+        )
+        self._workflow_ids[runnable.path] = workflow["id"]
 
     def workflow_id(self, path):
         return self._workflow_ids[path]

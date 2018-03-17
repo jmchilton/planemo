@@ -44,7 +44,7 @@ class CmdTestCondaTestCase(CliTestCase):
             self._check_exit_code(test_command, exit_code=0)
 
     @skip_if_environ("PLANEMO_SKIP_GALAXY_TESTS")
-    @mark.tests_galaxy_branch
+    @mark.tests_galaxy_branch_debug
     def test_conda_dependencies_version(self):
         """Test tool with wrong version and ensure it fails."""
         with self._isolate():

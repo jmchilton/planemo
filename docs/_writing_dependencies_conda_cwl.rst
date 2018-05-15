@@ -4,18 +4,22 @@ Dependencies and Conda
 ===========================================
 
 ----------------------------------------------------------------
-Specifying and Using Tool Requirements
+Specifying and Using `Software Requirements`_
 ----------------------------------------------------------------
-
-.. note:: This document discusses using Conda to satisfy tool dependencies from a tool developer
-    perspective. An in depth discussion of using Conda to satisfy dependencies from an
-    admistrator's perspective can be found `here <https://docs.galaxyproject.org/en/latest/admin/conda_faq.html>`__.
-    That document also serves as good background for this discussion.
 
 .. include:: _writing_conda_init.rst
 
-While Galaxy can be configured to resolve dependencies various ways, Planemo
-is configured with opinionated defaults geared at making building tools that
+The Common Workflow Language specification loosely describes
+`Software Requirements`_ - a way to map CWL hints to packages, environment
+modules, or any other mechanism to describe dependencies for running a tool
+outside of a container. The large and active Galaxy tool development community
+has built a library and set of best practices for describing dependencies
+for Galaxy that should work just as well for CWL. The library has been integrated
+with cwltool_ and Toil_ to enable CWL tool developers to leverage the
+power and flexibility of the Galaxy dependency management and best practices.
+
+While `Software Requirements`_ can be configured to resolve dependencies various ways,
+Planemo is configured with opinionated defaults geared at making building CWL tools that
 target Conda_ as easy as possible.
 
 During the introductory tool development tutorial, we called ``planemo tool_init``
@@ -29,17 +33,6 @@ the XML::
 As configured by Planemo, when Galaxy encounters these ``requirement`` tags it
 will attempt to install Conda, check for referenced packages (such as
 ``seqtk``), and install them as needed for tool testing.
-
-.. figure:: images/dependency_resolution.png
-   :alt: Diagram describing mapping tool requirements to dependencies.
-
-   Galaxy's dependency resolution maps tool requirement tags to concrete
-   applications and libraries setup by the Galaxy deployer (or Planemo). As
-   the above diagram indicates the same requirements may be used by multiple
-   Galaxy tools and a single Galaxy tool may depend on multiple requirements.
-   The document describes working with Conda dependencies from a developer
-   perspective but other dependency resolution techniques are covered in
-   the `Galaxy docs <https://docs.galaxyproject.org/en/latest/admin/dependency_resolvers.html>`__.
 
 We can check if the requirements on a tool are available in best practice
 Conda channels using an extended form of the ``planemo lint`` command. Passing
@@ -342,7 +335,11 @@ and testing such a Bioconda package, you would normally push your branch to Gith
 and open a pull request. This step is skipped here as to not pollute Bioconda with unneeded
 software packages.
 
+.. _Software Requirements: https://www.commonwl.org/v1.0/CommandLineTool.html#SoftwareRequirement
 .. _fleeqtk: https://github.com/jmchilton/fleeqtk
 .. _Bioconda: https://github.com/bioconda/bioconda-recipes
 .. _Conda: https://conda.io/docs/
 .. _Anaconda: https://anaconda.org/
+.. _cwltool: https://github.com/common-workflow-language/cwltool
+.. _Toil: https://github.com/BD2KGenomics/toil
+

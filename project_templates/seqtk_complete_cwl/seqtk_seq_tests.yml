@@ -1,4 +1,4 @@
-#!planemo test
+
 - doc: test generated from example command
   job:
     input1:

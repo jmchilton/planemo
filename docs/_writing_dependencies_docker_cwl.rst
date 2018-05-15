@@ -228,7 +228,7 @@ the ``--biocontainers`` flag.
 
 ::
 
-    $ planemo test --biocontainers bwa_and_samtools.xml
+    $ planemo test --galaxy_branch dev --biocontainers bwa_and_samtools.xml
     ...
     2017-03-01 10:20:58,077 INFO  [galaxy.tools.actions] Handled output named output_2 for tool bwa_and_samtools (17.443 ms)
     2017-03-01 10:20:58,090 INFO  [galaxy.tools.actions] Added output datasets to history (12.935 ms)

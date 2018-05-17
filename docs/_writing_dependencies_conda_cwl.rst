@@ -1,4 +1,4 @@
-.. _dependencies_and_conda:
+.. _dependencies_and_conda_cwl:
 
 Dependencies and Conda
 ===========================================
@@ -39,7 +39,7 @@ Planemo is configured with opinionated defaults geared at making building CWL to
 target Conda_ as easy as possible and build tools with requirements compatible with
 cwltool_ and Toil_ when running outside containers.
 
-During the introductory tool development tutorial, we called ``planemo tool_init``
+During the tool development `introductory tutorial`_, we called ``planemo tool_init``
 with the argument ``--requirement seqtk@1.2`` and the resulting tool contained such
 a ``SoftwareRequirement`` in the form the following the YAML fragment::
 
@@ -49,13 +49,13 @@ a ``SoftwareRequirement`` in the form the following the YAML fragment::
         version:
         - "1.2"
 
-Planemo (and cwltool and Toil) can interpret these ``SoftwareRequirement`` in varoius ways
+Planemo (and cwltool_ and Toil_) can interpret these ``SoftwareRequirement`` in varoius ways
 including as Conda packages and install Conda packages referenced this way (such as ``seqtk``),
 and install them as needed for tool testing.
 
 We can check if the requirements on a tool are available in best practice
 Conda channels using an extended form of the ``planemo lint`` command (``planemo lint`` was
-introduced in the `intro tutorial`_). Passing ``--conda_requirements`` flag will ensure all
+introduced in the `introductory tutorial`_). Passing ``--conda_requirements`` flag will ensure all
 listed requirements are found.
 
 ::
@@ -66,7 +66,7 @@ listed requirements are found.
     Applying linter requirements_in_conda... CHECK
     .. INFO: Requirement [seqtk@1.2] matches target in best practice Conda channel [https://conda.anaconda.org/bioconda/osx-64].
 
-.. note:: You can download a more complete version of the CWL seqtk seq from the Planemo
+.. note:: You can download a more complete version of the CWL seqtk_ seq from the Planemo
     tutorial using the command::
 
         $ planemo project_init --template=seqtk_complete_cwl seqtk_example
@@ -74,7 +74,7 @@ listed requirements are found.
 
 We can verify these tool requirements install with the ``conda_install`` command. With
 its default parameters ``conda_install`` processes tools and creates isolated environments
-for their declared SoftwareRequirements (mirroring what can be done in production with 
+for their declared `Software Requirements`_ (mirroring what can be done in production with 
 cwltool_ and Toil_).
 
 ::
@@ -193,10 +193,10 @@ Use the ``project_init`` command to download this exercise.
     $ ls 
     pear.cwl              test-data
 
-This project template contains a few exercises. The first uses an adapted
-version of an IUC tool for `PEAR - Paired-End reAd mergeR
-<http://sco.h-its.org/exelixis/web/software/pear/>`__. This tool however has
-no ``requirement`` tags and so will not work properly.
+This project template contains a few exercises. The first uses a CWL tool for
+`PEAR - Paired-End reAd mergeR <http://sco.h-its.org/exelixis/web/software/pear/>`__.
+This tool however has no ``SoftwareRequirement`` or container annotations and so will
+not work properly without modification.
 
 1. Run ``planemo test pear.cwl`` to verify the tool does not function
    without dependencies defined.
@@ -210,96 +210,37 @@ no ``requirement`` tags and so will not work properly.
 6. Re-run the ``test`` command from above to verify the tool test now
    works properly.
 
-----------------------------------------------------------------
-Building New Conda Packages
-----------------------------------------------------------------
 
-Frequently packages your tool will require are not found in Bioconda_
-or conda-forge yet. In these cases, it is likely best to contribute
-your package to one of these projects. Unless the tool is exceedingly
-general Bioconda_ is usually the correct starting point.
-
-.. note:: Many things that are not strictly or even remotely "bio" have
-    been accepted into Bioconda_ - including tools for image analysis,
-    natural language processing, and cheminformatics.
-
-To get quickly learn to write Conda_ recipes for typical Galaxy tools,
-please read the following pieces of external documentation.
-
-- `Contributing to Bioconda <https://bioconda.github.io/contributing.html>`__ in particular focusing on
-
-  - `One time setup <https://bioconda.github.io/contrib-setup.html>`__
-  - `Contributing a recipe <https://bioconda.github.io/contribute-a-recipe.html>`__ (through "Write a Recipe")
-- `Building conda packages <https://conda.io/docs/building/bpp.html#>`__ in particular
-
-  - `Building conda packages with conda skeleton <https://conda.io/docs/build_tutorials/pkgs.html>`__ (the best approach for common scripting languages such as R and Python)
-  - `Building conda packages from scratch <https://conda.io/docs/build_tutorials/pkgs2.html>`__
-  - `Building conda packages for general code projects <https://conda.io/docs/build_tutorials/postgis.html>`__
-  - `Using conda build <https://conda.io/docs/building/recipe.html>`__
-- Then return to the Bioconda documentation and read
-
-  - The rest of "Contributing a recipe" continuing from `Testing locally <https://bioconda.github.io/contribute-a-recipe.html#test-locally>`__
-  - And finally `Guidelines for bioconda recipes <https://bioconda.github.io/guidelines.html>`__
-
-These guidelines in particular can be skimmed depending on your recipe type, for
-instance that document provides specific advice for:
-
-- `Python <https://bioconda.github.io/guidelines.html#python>`__
-- `R (CRAN) <https://bioconda.github.io/guidelines.html#r-cran>`__
-- `R (Bioconductor) <https://bioconda.github.io/guidelines.html#r-bioconductor>`__
-- `Perl <https://bioconda.github.io/guidelines.html#perl>`__
-- `C/C++ <https://bioconda.github.io/guidelines.html#c-c>`__
-
-To go a little deeper, you may want to read: 
-
-- `Specification for meta.yaml <https://conda.io/docs/building/meta-yaml.html>`__
-- `Environment variables <https://conda.io/docs/building/environment-vars.html>`__
-- `Custom channels <https://conda.io/docs/custom-channels.html>`__
-
-And finally to debug problems the `Bioconda troubleshooting <https://bioconda.github.io/troubleshooting.html>`__
-documentation may prove useful.
-
-----------------------------------------------------------------
-Exercise - Build a Recipe
-----------------------------------------------------------------
-
-If you have just completed the exercise above - this exercise can be found in parent folder. Get
-there with ``cd ../exercise2``. If not, the exercise can be downloaded with
+.. include:: _writing_conda_new.rst
 
 ::
 
-    $ planemo project_init --template conda_exercises conda_exercises
+    $ planemo project_init --template conda_exercises_cwl conda_exercises
     $ cd conda_exercises/exercise2
     $ ls 
-    fleeqtk_seq.xml              test-data
+    fleeqtk_seq.cwl      fleeqtk_seq_tests.yml         test-data
 
-This is the skeleton of a tool wrapping the parody bioinformatics software package fleeqtk_.
-fleeqtk is a fork of the project seqtk that many Planemo tutorials are built around and the
-example tool ``fleeqtk_seq.xml`` should be fairly familiar. fleeqtk version 1.3 can be downloaded
-from `here <https://github.com/jmchilton/fleeqtk/archive/v1.3.tar.gz>`__ and built using
-``make``. The result of ``make`` includes a single executable ``fleeqtk``.
+.. include:: _writing_conda_fleeqtk.rst
 
 1. Clone and branch Bioconda_.
 2. Build a recipe for fleeqtk version 1.3. You may wish to use ``conda skeleton``, start from
    scratch, or copy the recipe of seqtk and work from there - any of these strategies should work.  
 3. Use ``conda build`` or Bioconda tooling to build the recipe.
-4. Run ``planemo conda_install --conda_use_local fleeqtk_seq.xml`` to verify the resulting package
+4. Run ``planemo conda_install --conda_use_local fleeqtk_seq.cwl`` to verify the resulting package
    can be built into a Galaxy environment.
-5. Run ``planemo test fleeqtk_seq.xml`` to verify the resulting package works as expected.
+5. Run ``planemo test fleeqtk_seq.cwl`` to verify the resulting package works as expected.
 
-.. note: The planemo flag ``--conda_use_local`` causes planemo and Galaxy to use locally built
+.. note: The planemo flag ``--conda_use_local`` causes Planemo to use locally built
      packages during dependency resolution and related commands.
 
-Congratulations on writing a Conda recipe and building a package.  Upon succesfully building
-and testing such a Bioconda package, you would normally push your branch to Github
-and open a pull request. This step is skipped here as to not pollute Bioconda with unneeded
-software packages.
+.. include:: _writing_conda_recipe_complete.rst
 
 .. _Software Requirements: https://www.commonwl.org/v1.0/CommandLineTool.html#SoftwareRequirement
+.. _seqtk: https://github.com/lh3/seqtk
 .. _fleeqtk: https://github.com/jmchilton/fleeqtk
 .. _Bioconda: https://github.com/bioconda/bioconda-recipes
 .. _Conda: https://conda.io/docs/
 .. _Anaconda: https://anaconda.org/
 .. _cwltool: https://github.com/common-workflow-language/cwltool
 .. _Toil: https://github.com/BD2KGenomics/toil
-.. _intro tutorial: http://planemo.readthedocs.io/en/latest/writing_cwl.html
+.. _introductory tutorial: http://planemo.readthedocs.io/en/latest/writing_cwl.html

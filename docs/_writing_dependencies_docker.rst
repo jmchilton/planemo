@@ -8,8 +8,8 @@ Galaxy job runner but details can be found in Galaxy's job_conf.xml sample file.
 This document doesn't describe how to run the containers, it describes how Galaxy
 figures out which container to run for a given tool. There are currently
 two strategies for finding containers for a tool - and they are each
-discussed in detail in this document. The newer approach is more experimental
-but will ultimately be considered the best practice approach - it is
+discussed in detail in this document. The newer approach is a bit more experimental
+but should be considered the best practice approach - it is
 to allow Galaxy to find or build a BioContainers_ container using ``requirement``
 tags that resolve to best-practice Conda channels. The older approach is
 to explicitly declare a container identifier in the tool XML.
@@ -25,6 +25,15 @@ approach has a few key advantages that make them a best practice:
   on Docker Hub.
 - They are produced using mulled_ which produce very small containers
   that make deployment easy.
+- Annotating ``requirement`` tags reduces the opaqueness of the Docker process.
+  With this method it is entirely traceable how the container was constructed from
+  what sources were fetched, which exact build of every dependency was used, to how
+  packages in the container were built. Beyond that metadata about the packages can be
+  fetched from BioConda_ (e.g. `this
+  <https://github.com/BioContainers/biotools-bioconda-ids/blob/master/mapping.csv>`__).
+
+Read more about this reproducibility stack in our preprint `Practical computational
+reproducibility in the life sciences <https://www.biorxiv.org/content/early/2017/10/10/200683>`__.
 
 ----------------------------------------------------------------
 BioContainers_

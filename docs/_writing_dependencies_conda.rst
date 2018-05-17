@@ -219,61 +219,7 @@ no ``requirement`` tags and so will not work properly.
 6. Re-run the ``test`` command from above to verify the tool test now
    works properly.
 
-----------------------------------------------------------------
-Building New Conda Packages
-----------------------------------------------------------------
-
-Frequently packages your tool will require are not found in Bioconda_
-or conda-forge yet. In these cases, it is likely best to contribute
-your package to one of these projects. Unless the tool is exceedingly
-general Bioconda_ is usually the correct starting point.
-
-.. note:: Many things that are not strictly or even remotely "bio" have
-    been accepted into Bioconda_ - including tools for image analysis,
-    natural language processing, and cheminformatics.
-
-To get quickly learn to write Conda_ recipes for typical Galaxy tools,
-please read the following pieces of external documentation.
-
-- `Contributing to Bioconda <https://bioconda.github.io/contributing.html>`__ in particular focusing on
-
-  - `One time setup <https://bioconda.github.io/contrib-setup.html>`__
-  - `Contributing a recipe <https://bioconda.github.io/contribute-a-recipe.html>`__ (through "Write a Recipe")
-- `Building conda packages <https://conda.io/docs/building/bpp.html#>`__ in particular
-
-  - `Building conda packages with conda skeleton <https://conda.io/docs/build_tutorials/pkgs.html>`__ (the best approach for common scripting languages such as R and Python)
-  - `Building conda packages from scratch <https://conda.io/docs/build_tutorials/pkgs2.html>`__
-  - `Building conda packages for general code projects <https://conda.io/docs/build_tutorials/postgis.html>`__
-  - `Using conda build <https://conda.io/docs/building/recipe.html>`__
-- Then return to the Bioconda documentation and read
-
-  - The rest of "Contributing a recipe" continuing from `Testing locally <https://bioconda.github.io/contribute-a-recipe.html#test-locally>`__
-  - And finally `Guidelines for bioconda recipes <https://bioconda.github.io/guidelines.html>`__
-
-These guidelines in particular can be skimmed depending on your recipe type, for
-instance that document provides specific advice for:
-
-- `Python <https://bioconda.github.io/guidelines.html#python>`__
-- `R (CRAN) <https://bioconda.github.io/guidelines.html#r-cran>`__
-- `R (Bioconductor) <https://bioconda.github.io/guidelines.html#r-bioconductor>`__
-- `Perl <https://bioconda.github.io/guidelines.html#perl>`__
-- `C/C++ <https://bioconda.github.io/guidelines.html#c-c>`__
-
-To go a little deeper, you may want to read: 
-
-- `Specification for meta.yaml <https://conda.io/docs/building/meta-yaml.html>`__
-- `Environment variables <https://conda.io/docs/building/environment-vars.html>`__
-- `Custom channels <https://conda.io/docs/custom-channels.html>`__
-
-And finally to debug problems the `Bioconda troubleshooting <https://bioconda.github.io/troubleshooting.html>`__
-documentation may prove useful.
-
-----------------------------------------------------------------
-Exercise - Build a Recipe
-----------------------------------------------------------------
-
-If you have just completed the exercise above - this exercise can be found in parent folder. Get
-there with ``cd ../exercise2``. If not, the exercise can be downloaded with
+.. include:: _writing_conda_new.rst
 
 ::
 
@@ -282,11 +228,7 @@ there with ``cd ../exercise2``. If not, the exercise can be downloaded with
     $ ls 
     fleeqtk_seq.xml              test-data
 
-This is the skeleton of a tool wrapping the parody bioinformatics software package fleeqtk_.
-fleeqtk is a fork of the project seqtk that many Planemo tutorials are built around and the
-example tool ``fleeqtk_seq.xml`` should be fairly familiar. fleeqtk version 1.3 can be downloaded
-from `here <https://github.com/jmchilton/fleeqtk/archive/v1.3.tar.gz>`__ and built using
-``make``. The result of ``make`` includes a single executable ``fleeqtk``.
+.. include:: _writing_conda_fleeqtk.rst
 
 1. Clone and branch Bioconda_.
 2. Build a recipe for fleeqtk version 1.3. You may wish to use ``conda skeleton``, start from
@@ -296,13 +238,10 @@ from `here <https://github.com/jmchilton/fleeqtk/archive/v1.3.tar.gz>`__ and bui
    can be built into a Galaxy environment.
 5. Run ``planemo test fleeqtk_seq.xml`` to verify the resulting package works as expected.
 
-.. note: The planemo flag ``--conda_use_local`` causes planemo and Galaxy to use locally built
+.. note: The planemo flag ``--conda_use_local`` causes Planemo to use locally built
      packages during dependency resolution and related commands.
 
-Congratulations on writing a Conda recipe and building a package.  Upon succesfully building
-and testing such a Bioconda package, you would normally push your branch to Github
-and open a pull request. This step is skipped here as to not pollute Bioconda with unneeded
-software packages.
+.. include:: _writing_conda_recipe_complete.rst
 
 .. _fleeqtk: https://github.com/jmchilton/fleeqtk
 .. _Bioconda: https://github.com/bioconda/bioconda-recipes

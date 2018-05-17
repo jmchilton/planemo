@@ -1,83 +1,79 @@
 Dependencies and Docker
 ===========================================
 
-For years Galaxy has supported running tools inside containers. The details
-of how to run Galaxy tools inside of containers varies depending on the
-Galaxy job runner but details can be found in Galaxy's job_conf.xml sample file.
+.. note:: This section is a continuation of :ref:`dependencies_and_conda_cwl`,
+    please review that section for background information on resolving
+    `Software Requirements`_ with Conda.
 
-This document doesn't describe how to run the containers, it describes how Galaxy
-figures out which container to run for a given tool. There are currently
-two strategies for finding containers for a tool - and they are each
-discussed in detail in this document. The newer approach is more experimental
-but will ultimately be considered the best practice approach - it is
-to allow Galaxy to find or build a BioContainers_ container using ``requirement``
-tags that resolve to best-practice Conda channels. The older approach is
-to explicitly declare a container identifier in the tool XML.
+Common Workflow Language tools can be annotated with arbitrary Docker requirements,
+see the `CWL User Guide <http://www.commonwl.org/user_guide/07-containers/>`__
+for a discussion about how to do this in general.
 
-While not as flexible as resolving arbitrary image IDs from URLs, the newer
-approach has a few key advantages that make them a best practice:
+This document will discuss some techniques to find containers automatically from
+the ``SoftwareRequirement`` annotations when using Planemo, cwltool_, or Toil_.
+You will ultimately want to explicitly annotate your tools with the containers
+we describe here so that other CWL implementations will be able to find containers
+for your tool, but there are real advantages to using these containers instead
+of ad-hoc things you may build with a ``Dockerfile``.
 
-- They provide superior reproducibility across Galaxy instances because the same
-  binary Conda packages will automatically be used for both bare metal dependencies
-  and inside containers.
-- They are constructed automatically from existing Conda packages so tool
-  developers shouldn't need to write ``Dockerfile`` s or register projects
-  on Docker Hub.
+- They provide superior reproducibility because the same binary Conda packages
+  will automatically be used for both bare metal dependencies and inside containers.
+- They are constructed automatically from existing Conda packages so you as a tool
+  developer won't need to write ``Dockerfile`` s or register projects on Docker Hub.
 - They are produced using mulled_ which produce very small containers
-  that make deployment easy.
+  that make deployment easier regardless of the CWL implementation you are using.
+- Annotating `Software Requirements`_ reduces the opaqueness of the Docker process.
+  With this method it is entirely traceable how the container was constructed from
+  what sources were fetched, which exact build of every dependency was used, to how
+  packages in the container were built. Beyond that metadata about the packages can be
+  fetched from BioConda_ (e.g. `this
+  <https://github.com/BioContainers/biotools-bioconda-ids/blob/master/mapping.csv>`__).
+
+Read more about this reproducibility stack in our preprint `Practical computational
+reproducibility in the life sciences <https://www.biorxiv.org/content/early/2017/10/10/200683>`__.
 
 ----------------------------------------------------------------
 BioContainers_
 ----------------------------------------------------------------
 
-.. note:: This section is a continuation of :ref:`dependencies_and_conda`,
+.. note:: This section is a continuation of :ref:`dependencies_and_conda_cwl`,
     please review that section for background information on resolving
-    requirements with Conda.
+    `Software Requirements`_ with Conda.
 
 Finding and Building BioContainers_
 ----------------------------------------------------------------
 
-
-If a tool contains requirements in best practice Conda channels, a
+If a tool contains `Software Requirements`_ in best practice Conda channels, a
 BioContainers_-style container can be found or built for it.
 
-As reminder, ``planemo lint --conda_requirements <tool.xml>`` can be used
+As reminder, ``planemo lint --conda_requirements <tool.cwl>`` can be used
 to check if a tool contains only best-practice ``requirement`` tags. The ``lint``
 command can also be fed the ``--biocontainers`` flag to check if a
 BioContainers_ container has been registered that is compatible with that tool.
 
-Below is an example of using this with the completed ``seqtk_seq.xml``
-tool from the introductory tutorial.
+Below is an example of using this with the completed ``seqtk_seq.cwl``
+tool from the `introductory tutorial`_.
 
 ::
 
-    $ planemo lint --biocontainers seqtk_seq.xml
-    Linting tool /home/planemo/workspace/planemo/project_templates/seqtk_complete/seqtk_seq.xml
-    Applying linter tests... CHECK
-    .. CHECK: 1 test(s) found.
-    Applying linter output... CHECK
-    .. INFO: 1 outputs found.
-    Applying linter inputs... CHECK
-    .. INFO: Found 9 input parameters.
-    Applying linter help... CHECK
-    .. CHECK: Tool contains help section.
-    .. CHECK: Help contains valid reStructuredText.
+    $ planemo lint --biocontainers seqtk_seq.cwl
+    Linting tool /Users/john/workspace/planemo/project_templates/seqtk_complete_cwl/seqtk_seq.cwl
     Applying linter general... CHECK
-    .. CHECK: Tool defines a version [0.1.0].
+    .. CHECK: Tool defines a version [0.0.1].
     .. CHECK: Tool defines a name [Convert to FASTA (seqtk)].
     .. CHECK: Tool defines an id [seqtk_seq].
-    .. CHECK: Tool targets 16.01 Galaxy profile.
-    Applying linter command... CHECK
-    .. INFO: Tool contains a command.
-    Applying linter citations... CHECK
-    .. CHECK: Found 1 likely valid citations.
-    Applying linter tool_xsd... CHECK
-    .. INFO: File validates against XML schema.
+    .. CHECK: Tool specifies profile version [16.04].
+    Applying linter cwl_validation... CHECK
+    .. INFO: CWL appears to be valid.
+    Applying linter docker_image... CHECK
+    .. INFO: Tool will run in Docker image [quay.io/biocontainers/seqtk:1.2--1].
+    Applying linter new_draft... CHECK
+    .. INFO: Modern CWL version [v1.0]
     Applying linter biocontainer_registered... CHECK
-    .. INFO: BioContainer best-practice container found [quay.io/biocontainers/seqtk:1.2--0].
+    .. INFO: BioContainer best-practice container found [quay.io/biocontainers/seqtk:1.2--1].
 
 This last line indicates that indeed a container has been registered
-that is compatible with this tool -- ``quay.io/biocontainers/seqtk:1.2--0``.
+that is compatible with this tool -- ``quay.io/biocontainers/seqtk:1.2--1``.
 We didn't do any extra work to build this container for this tool, all
 BioConda_ recipes are packaged into containers and registered on quay.io_
 as part of the BioContainers_ project.
@@ -329,7 +325,10 @@ example is worked through `this documentation
 <https://github.com/apetkau/galaxy-hackathon-2014>`__ from Aaron Petkau
 (@apetkau) built at the 2014 Galaxy Community Conference Hackathon.
 
+.. _Software Requirements: https://www.commonwl.org/v1.0/CommandLineTool.html#SoftwareRequirement
 .. _BioContainers: http://biocontainers.pro/
 .. _mulled: https://github.com/BioContainers/auto-mulled
 .. _quay.io: https://quay.io
 .. _Travis: https://travis-ci.org
+.. _cwltool: https://github.com/common-workflow-language/cwltool
+.. _Toil: https://github.com/BD2KGenomics/toil

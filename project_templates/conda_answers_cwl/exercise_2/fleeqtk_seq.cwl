@@ -1,16 +1,14 @@
 #!/usr/bin/env cwl-runner
 cwlVersion: 'v1.0'
 class: CommandLineTool
-id: "seqtk_seq"
-label: "Convert to FASTA (seqtk)"
+id: "fleeqtk_seq"
+label: "Convert to FASTA (fleeqtk)"
 hints:
-  DockerRequirement:
-    dockerPull: quay.io/biocontainers/seqtk:1.2--1
   SoftwareRequirement:
     packages:
-    - package: seqtk
+    - package: fleeqtk
       version:
-      - "1.2"
+      - "1.3"
 inputs:
   input1:
     type: File
@@ -25,13 +23,13 @@ outputs:
     outputBinding:
       glob: out
 baseCommand:
-  - "seqtk"
+  - "fleeqtk"
   - "seq"
 arguments: []
 stdout: out
 doc: |
   
-  Usage:   seqtk seq [options] <in.fq>|<in.fa>
+  Usage:   fleeqtk seq [options] <in.fq>|<in.fa>
 
   Options: -q INT    mask bases with quality lower than INT [0]
            -X INT    mask bases with quality higher than INT [255]
@@ -61,29 +59,20 @@ $schemas:
 s:mainEntity:
   class: s:SoftwareSourceCode
   s:name: seqtk
-  s:about: 'Toolkit for processing sequences in FASTA/Q formats'
-  s:url: https://github.com/lh3/seqtk
-  s:codeRepository: https://github.com/lh3/seqtk
+  s:about: 'Those sequences are on fleeq - the toolkit'
+  s:url: https://github.com/jmchilton/fleeqtk
+  s:codeRepository: https://github.com/jmchilton/fleeqtk
 
   s:license:
   - https://opensource.org/licenses/MIT
 
   s:targetProduct:
     class: s:SoftwareApplication
-    s:softwareVersion: "1.2"
+    s:softwareVersion: "1.3"
     s:applicationCategory: commandline tool
   s:programmingLanguage: C
-  s:publication:
-  - class: s:ScholarlyArticle
-    id: http://dx.doi.org/10.1093/bioinformatics/bts635
 
-  s:author:
-  - class: s:Person
-    s:name: "Heng Li"
-    s:sameAs:
-    - id: https://orcid.org/0000-0003-4874-2874
-
-s:downloadUrl: https://github.com/galaxyproject/planemo/blob/master/project_templates/seqtk_complete_cwl/seqtk_seq.cwl
+s:downloadUrl: https://github.com/galaxyproject/planemo/blob/master/project_templates/conda_exercises_cwl/fleeqtk_seq.cwl
 s:codeRepository: https://github.com/galaxyproject/planemo
 s:isPartOf:
   class: s:CreativeWork

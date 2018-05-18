@@ -14,21 +14,21 @@ set -e
 # - docker running and sudo-less access available via the docker command.
 
 cd
-rm -rf seqtk_example
+rm -rf conda_exercises
 rm -rf conda_testing
 
 
 echo "Setup completed seqtk example"
 # TODO: project_init once in master branch
-# planemo project_init --template=seqtk_complete_cwl seqtk_example
-cp -r $PROJECT_DIRECTORY/project_templates/seqtk_complete_cwl seqtk_example
-cd seqtk_example
+# planemo project_init --template=conda_exercies_cwl conda_exercies
+cp -r $PROJECT_DIRECTORY/project_templates/conda_exercies_cwl conda_exercies
+cd conda_exercies
 
-echo "We should see biocontainer found for this tool"
-planemo lint --biocontainers seqtk_seq.cwl
+echo "We should see biocontainer found for this tool, but not a Docker container"
+planemo lint --biocontainers seqtk_seq.cwl | true
 
 echo "This should pass and we should see container was used."
-planemo test --biocontainers seqtk_seq.cwl
+planemo test --biocontainers --engine cwltool seqtk_seq.cwl
 
 cd ..
 

@@ -29,7 +29,7 @@ approach has a few key advantages that make them a best practice:
   With this method it is entirely traceable how the container was constructed from
   what sources were fetched, which exact build of every dependency was used, to how
   packages in the container were built. Beyond that metadata about the packages can be
-  fetched from BioConda_ (e.g. `this
+  fetched from Bioconda_ (e.g. `this
   <https://github.com/BioContainers/biotools-bioconda-ids/blob/master/mapping.csv>`__).
 
 Read more about this reproducibility stack in our preprint `Practical computational
@@ -43,7 +43,7 @@ BioContainers_
     please review that section for background information on resolving
     requirements with Conda.
 
-Finding and Building BioContainers_
+Finding BioContainers_
 ----------------------------------------------------------------
 
 
@@ -85,14 +85,7 @@ tool from the introductory tutorial.
     Applying linter biocontainer_registered... CHECK
     .. INFO: BioContainer best-practice container found [quay.io/biocontainers/seqtk:1.2--0].
 
-This last line indicates that indeed a container has been registered
-that is compatible with this tool -- ``quay.io/biocontainers/seqtk:1.2--0``.
-We didn't do any extra work to build this container for this tool, all
-BioConda_ recipes are packaged into containers and registered on quay.io_
-as part of the BioContainers_ project.
-
-This tool can be tested using ``planemo test`` in its BioContainer
-Docker container using the flag ``--biocontainers`` as shown (in part) next.
+.. include:: _writing_containers_linter_explain.rst
 
 ::
 
@@ -137,6 +130,9 @@ executed the tool in that container.
 
 For interactive testing, the ``planemo serve`` command also implements the
 ``--biocontainers`` flag.
+
+Building BioContainers_
+----------------------------------------------------------------
 
 In this seqtk example the relevant BioContainer already existed on quay.io_,
 this won't always be the case. For tools that contain multiple ``requirement``
@@ -205,32 +201,7 @@ demonstrating this - `bwa_and_samtools.xml
     [Jun 19 11:29:57] DEBU Creating container [step-6f1c176372]
     [Jun 19 11:29:58] DEBU Packing succeeded
 
-As the output indicates, this command built the container named
-``quay.io/biocontainers/mulled-v2-fe8faa35dbf6dc65a0f7f5d4ea12e31a79f73e40:03dc1d2818d9de56938078b8b78b82d967c1f820-0``.
-This is the same namespace / URL that would be used if or when published by
-the BioContainers_ project.
-
-.. note:: The first part of this ``mulled-v2`` hash is a hash of the package names
-    that went into it, the second the packages used and build number. Check out
-    the `Multi-package Containers <http://biocontainers.pro/multi-package-containers/>`__
-    web application to explore best practice channels and build such hashes.
-
-We can see this new container when running the Docker command ``images`` and
-explore the new container interactively with ``docker run``.
-
-::
-
-    $ docker images
-    REPOSITORY                                                                 TAG                                          IMAGE ID            CREATED              SIZE
-    quay.io/biocontainers/mulled-v2-fe8faa35dbf6dc65a0f7f5d4ea12e31a79f73e40   03dc1d2818d9de56938078b8b78b82d967c1f820-0   a740fe1e6a9e        16 hours ago         104 MB
-    quay.io/biocontainers/seqtk                                                1.2--0                                       10bc359ebd30        2 days ago           7.34 MB
-    continuumio/miniconda                                                      latest                                       6965a4889098        3 weeks ago          437 MB
-    bgruening/busybox-bash                                                     0.1                                          3d974f51245c        9 months ago         6.73 MB
-    $ docker run -i -t quay.io/biocontainers/mulled-v2-fe8faa35dbf6dc65a0f7f5d4ea12e31a79f73e40:03dc1d2818d9de56938078b8b78b82d967c1f820-0 /bin/bash
-    bash-4.2# which samtools
-    /usr/local/bin/samtools
-    bash-4.2# which bwa
-    /usr/local/bin/bwa
+.. include:: _writing_containers_mulled_output.rst
 
 As before, we can test running the tool inside its container in Galaxy using
 the ``--biocontainers`` flag.
@@ -272,10 +243,6 @@ the ``--biocontainers`` flag.
     All 1 test(s) executed passed.
     bwa_and_samtools[0]: passed
 
-.. warning:: The newer version 2 mulled hasing used by Planemo in the examples will only be
-    available in Galaxy's development branch until 17.09 is released in September or October of 2017.
-    This is why the above example uses the ``--galaxy_branch dev`` flag to fetch that branch of
-    Galaxy on the fly.
 
 In particular take note of the line::
 
@@ -292,42 +259,9 @@ from the BioContainer repository and this time the resolve that matched was of t
 cached version from the Docker host (i.e. the one we built with ``planemo mull``
 above).
 
-Planemo doesn't yet expose options that make it possible to build mulled
-containers for local packages that have yet to be published to anaconda.org
-but the mulled toolkit allows this. See mulled_ documentation for more
-information. However, once a container for a local package is built with
-``mulled-build-tool`` the ``--biocontainers`` command should work to test
-it.
+.. include:: _writing_containers_mulled_build.rst
 
-
-Publishing BioContainers_
-----------------------------------------------------------------
-
-Building unpublished BioContainers on the fly is great for testing but
-for production use and to increase reproducibility such containers should
-ideally be published as well.
-
-BioContainers_ maintains a registry of package combinations to be published
-using these long mulled hashes. This registry is represented as a Github repository
-named `multi-package-containers <https://github.com/biocontainers/multi-package-containers>`__.
-The Planemo command ``container_register`` will inspect a tool and open a
-Github pull request to add the tool's combination
-of packages to the registry. Once merged, this pull request will
-result in the corresponding BioContainers image to be published (with the
-correct mulled has as its name) - these can be subsequently be picked up by
-Galaxy.
-
-Various Github related settings need to be configured in order for Planemo
-to be able to open pull requests on your behalf as part of the
-``container_register`` command. To simplify all of this - the Planemo community
-maintains a list of Github repositories containing Galaxy and/or CWL tools that
-are scanned daily by Travis_. For each such repository, the Travis job will run
-``container_register`` across the repository on all tools resulting in new registry
-pull requests for all new combinations of tools. This list is maintained
-in a script named ``monitor.sh`` in the `planemo-monitor
-<https://github.com/galaxyproject/planemo-monitor/>`__ repository. The easiest way
-to ensure new containers are built for your tools is simply to open open a pull
-request to add your tool repositories to this list.
+.. include:: _writing_containers_publishing.rst
 
 ----------------------------------------------------------------
 Explicit Annotation
@@ -341,4 +275,4 @@ example is worked through `this documentation
 .. _BioContainers: http://biocontainers.pro/
 .. _mulled: https://github.com/BioContainers/auto-mulled
 .. _quay.io: https://quay.io
-.. _Travis: https://travis-ci.org
+.. _Bioconda: https://github.com/bioconda/bioconda-recipes

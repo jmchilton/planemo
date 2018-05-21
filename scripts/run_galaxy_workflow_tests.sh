@@ -65,6 +65,10 @@ elif [ "$PLANEMO_TEST_STYLE" = "docker_serve_and_test" ]; then
         "$1"
 elif [ "$PLANEMO_TEST_STYLE" = "test" ]; then
     # TODO: This variant is broken in initial tests for some reason.
+
+    # Does this help?
+    planemo conda_init || true
+
     planemo $PLANEMO_OPTIONS test \
         --database_type "$PLANEMO_SERVE_DATABASE_TYPE" \
         --galaxy_branch "$PLANEMO_GALAXY_BRANCH" \

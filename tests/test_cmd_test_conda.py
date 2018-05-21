@@ -63,6 +63,21 @@ class CmdTestCondaTestCase(CliTestCase):
 
     @skip_if_environ("PLANEMO_SKIP_GALAXY_TESTS")
     @mark.tests_galaxy_branch
+    def test_conda_dependencies_version_2(self):
+        """Test tool with wrong version and ensure it fails."""
+        with self._isolate():
+            # Try a failing test to ensure the primary test above isn't just passing spuriously.
+            bwa_test = os.path.join(TEST_TOOLS_DIR, "bwa_wrong_version_2.xml")
+            test_command = [
+                "--verbose",
+                "test",
+                "--galaxy_branch", target_galaxy_branch(),
+                bwa_test,
+            ]
+            self._check_exit_code(test_command, exit_code=1)
+
+    @skip_if_environ("PLANEMO_SKIP_GALAXY_TESTS")
+    @mark.tests_galaxy_branch
     def test_local_conda_dependencies_version(self):
         """Test a tool that requires local package builds."""
         with self._isolate():

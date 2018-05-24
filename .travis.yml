@@ -8,6 +8,8 @@ env:
     - PLANEMO_SKIP_GALAXY_CWL_TESTS=1
     - PLANEMO_TEST_WORKFLOW_RUN_PROFILE=travisworkflowtests
   matrix:
+    - DOCS=conda TOX_ENV=doc-test
+    - DOCS=conda_cwl TOX_ENV=doc-test
     - TOX_ENV=py27-lint
     - TOX_ENV=py34-lint
     - TOX_ENV=py27-lint-readme

@@ -26,4 +26,4 @@ about:
 
 test:
   commands:
-    - fleeqtk seq
+    - true

@@ -8,7 +8,7 @@ hints:
     packages:
     - package: fleeqtk
       version:
-      - "1.3"
+      - "1.4"
 inputs:
   input1:
     type: File

@@ -129,6 +129,7 @@ def test_get_hands_on_boxes_from_local_galaxy():
     assert_body_contains(tuto_body, '## Sub-step with **FastQC**')
     assert_body_contains(tuto_body, '## Sub-step with **Query Tabular**')
     assert_body_contains(tuto_body, '## Sub-step with **Select first**')
+    raise Exception("Forcing failure in py2 for io")
 
 
 @skip_if_environ("PLANEMO_SKIP_GALAXY_TESTS")
@@ -144,6 +145,7 @@ def test_get_hands_on_boxes_from_running_galaxy():
     assert_body_contains(tuto_body, '## Sub-step with **FastQC**')
     assert_body_contains(tuto_body, '## Sub-step with **Query Tabular**')
     assert_body_contains(tuto_body, '## Sub-step with **Select first**')
+    raise Exception("Forcing failure in py2 for io")
 
 
 def test_tutorial_init():

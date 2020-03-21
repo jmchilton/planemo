@@ -638,6 +638,7 @@ def format_wf_steps(wf, gi):
             tool_inp = ToolInput(inp, wf_param_values, steps, 1, should_be_there=True)
             paramlist += tool_inp.get_formatted_desc()
         # format the hands-on box
+        print("wf_step is [%s]" % wf_step)
         body += templates.render(HANDS_ON_TOOL_BOX_TEMPLATE, **{
             "tool_name": wf_step['name'],
             "paramlist": paramlist})

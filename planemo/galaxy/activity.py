@@ -6,19 +6,18 @@ import sys
 import tempfile
 import time
 import traceback
+from json import dumps
 
 import bioblend
 import requests
-import yaml
 from bioblend.util import attach_file
+from galaxy.tool_util.client.staging import (
+    StagingInterace,
+)
 from galaxy.tool_util.cwl.util import (
-    DirectoryUploadTarget,
-    FileUploadTarget,
-    galactic_job_json,
     invocation_to_output,
     output_properties,
     output_to_cwl_json,
-    path_or_uri_to_uri,
     tool_response_to_output,
 )
 from galaxy.tool_util.parser import get_tool_source
@@ -27,6 +26,7 @@ from galaxy.util import (
     unicodify,
 )
 from requests.exceptions import RequestException
+from six.moves.urllib.parse import urljoin
 
 from planemo.galaxy.api import summarize_history
 from planemo.io import wait_on
@@ -77,13 +77,79 @@ def log_contents_str(config):
         return "No log for this engine type."
 
 
+def _post_hacked_for_files(url, data=None, params=None, json=None, files=None):
+    # copied from tool-util internals - maybe expose this hack as gross as it is
+
+    params = params or {}
+    data = data or {}
+
+    # handle encoded files
+    if files is None:
+        files = data.get("__files", None)
+        if files is not None:
+            del data["__files"]
+
+            # files doesn't really work with json, so dump the parameters
+            # and do a normal POST with request's data parameter.
+            if json:
+                json = False
+                new_items = {}
+                for key, val in data.items():
+                    if isinstance(val, dict) or isinstance(val, list):
+                        new_items[key] = dumps(val)
+                data.update(new_items)
+
+    kwd = {
+        'files': files,
+    }
+    if json:
+        kwd['json'] = data
+        kwd['params'] = params
+    else:
+        data.update(params)
+        kwd['data'] = data
+    return requests.post(url, **kwd)
+
+
+class PlanemoStagingInterface(StagingInterace):
+
+    def __init__(self, ctx, user_gi, version_major):
+        self._ctx = ctx
+        self._user_gi = user_gi
+        self._version_major = version_major
+
+    def _post(self, api_path, payload, files_attached=False):
+        params = dict(key=self._user_gi.key)
+        url = urljoin(self._user_gi.url, "api/" + api_path)
+        return _post_hacked_for_files(url, data=payload, params=params, json=True).json()
+
+    def _attach_file(self, path):
+        return attach_file(path)
+
+    def _handle_job(self, job_response):
+        job_id = job_response["id"]
+        _wait_for_job(self._user_gi, job_id)
+
+    @property
+    def use_fetch_api(self):
+        return self._version_major >= "20.09"
+
+    # extension point for planemo to override logging
+    def _log(self, message):
+        self._ctx.vlog(message)
+
+
 def _execute(ctx, config, runnable, job_path, **kwds):
     user_gi = config.user_gi
     admin_gi = config.gi
 
     history_id = _history_id(user_gi, **kwds)
 
-    job_dict, _ = stage_in(ctx, runnable, config, user_gi, history_id, job_path, **kwds)
+    try:
+        job_dict, _ = stage_in(ctx, runnable, config, user_gi, history_id, job_path, **kwds)
+    except Exception:
+        ctx.vlog("Problem with staging in data for Galaxy activities...")
+        raise
 
     if runnable.type in [RunnableType.galaxy_tool, RunnableType.cwl_tool]:
         response_class = GalaxyToolRunResponse
@@ -185,101 +251,13 @@ def _execute(ctx, config, runnable, job_path, **kwds):
 
 
 def stage_in(ctx, runnable, config, user_gi, history_id, job_path, **kwds):  # noqa C901
-    files_attached = [False]
-
-    def upload_func(upload_target):
-
-        def _attach_file(upload_payload, uri, index=0):
-            uri = path_or_uri_to_uri(uri)
-            is_path = uri.startswith("file://")
-            if not is_path or config.use_path_paste:
-                upload_payload["inputs"]["files_%d|url_paste" % index] = uri
-            else:
-                files_attached[0] = True
-                path = uri[len("file://"):]
-                upload_payload["files_%d|file_data" % index] = attach_file(path)
-
-        if isinstance(upload_target, FileUploadTarget):
-            file_path = upload_target.path
-            upload_payload = user_gi.tools._upload_payload(
-                history_id,
-                file_type=upload_target.properties.get('filetype', None) or "auto",
-            )
-            name = _file_path_to_name(file_path)
-            upload_payload["inputs"]["files_0|auto_decompress"] = False
-            upload_payload["inputs"]["auto_decompress"] = False
-            if file_path is not None:
-                _attach_file(upload_payload, file_path)
-            upload_payload["inputs"]["files_0|NAME"] = name
-            if upload_target.secondary_files:
-                _attach_file(upload_payload, upload_target.secondary_files, index=1)
-                upload_payload["inputs"]["files_1|type"] = "upload_dataset"
-                upload_payload["inputs"]["files_1|auto_decompress"] = True
-                upload_payload["inputs"]["file_count"] = "2"
-                upload_payload["inputs"]["force_composite"] = "True"
-            # galaxy.exceptions.RequestParameterInvalidException: Not input source type
-            # defined for input '{'class': 'File', 'filetype': 'imzml', 'composite_data':
-            # ['Example_Continuous.imzML', 'Example_Continuous.ibd']}'.\n"}]]
-
-            if upload_target.composite_data:
-                for i, composite_data in enumerate(upload_target.composite_data):
-                    upload_payload["inputs"]["files_%s|type" % i] = "upload_dataset"
-                    _attach_file(upload_payload, composite_data, index=i)
-
-            ctx.vlog("upload_payload is %s" % upload_payload)
-            return user_gi.tools._post(upload_payload, files_attached=files_attached[0])
-        elif isinstance(upload_target, DirectoryUploadTarget):
-            tar_path = upload_target.tar_path
-
-            upload_payload = user_gi.tools._upload_payload(
-                history_id,
-                file_type="tar",
-            )
-            upload_payload["inputs"]["files_0|auto_decompress"] = False
-            _attach_file(upload_payload, tar_path)
-            tar_upload_response = user_gi.tools._post(upload_payload, files_attached=files_attached[0])
-            convert_response = user_gi.tools.run_tool(
-                tool_id="CONVERTER_tar_to_directory",
-                tool_inputs={"input1": {"src": "hda", "id": tar_upload_response["outputs"][0]["id"]}},
-                history_id=history_id,
-            )
-            assert "outputs" in convert_response, convert_response
-            return convert_response
-        else:
-            content = json.dumps(upload_target.object)
-            return user_gi.tools.paste_content(
-                content,
-                history_id,
-                file_type="expression.json",
-            )
-
-    def create_collection_func(element_identifiers, collection_type):
-        payload = {
-            "name": "dataset collection",
-            "instance_type": "history",
-            "history_id": history_id,
-            "element_identifiers": element_identifiers,
-            "collection_type": collection_type,
-            "fields": None if collection_type != "record" else "auto",
-        }
-        dataset_collections_url = user_gi.url + "/dataset_collections"
-        dataset_collection = user_gi.histories._post(payload, url=dataset_collections_url)
-        return dataset_collection
-
-    with open(job_path, "r") as f:
-        job = yaml.safe_load(f)
-
-    # Figure out what "." should be here instead.
-    job_dir = os.path.dirname(job_path)
-    job_dict, datasets = galactic_job_json(
-        job,
-        job_dir,
-        upload_func,
-        create_collection_func,
-        tool_or_workflow="tool" if runnable.type in [RunnableType.cwl_tool, RunnableType.galaxy_tool] else "workflow",
+    tool_or_workflow = "tool" if runnable.type in [RunnableType.cwl_tool, RunnableType.galaxy_tool] else "workflow"
+    job_dict, datasets = PlanemoStagingInterface(ctx, user_gi, config.version_major).stage(
+        tool_or_workflow, history_id=history_id, job_path=job_path, use_path_paste=config.use_path_paste
     )
 
     if datasets:
+        ctx.vlog("uploaded datasets [%s] for activity, checking history state" % datasets)
         final_state = _wait_for_history(ctx, user_gi, history_id)
 
         for (dataset, path) in datasets:
@@ -425,8 +403,6 @@ class GalaxyBaseRunResponse(SuccessfulRunResponse):
 
                     def attach_file_properties(collection, cwl_output):
                         elements = collection["elements"]
-                        print(elements)
-                        print(cwl_output)
                         assert len(elements) == len(cwl_output)
                         for element, cwl_output_element in zip(elements, cwl_output):
                             element["_output_object"] = cwl_output_element
@@ -640,15 +616,9 @@ def has_jobs_in_states(ctx, gi, history_id, states):
 
 
 def _wait_for_history(ctx, gi, history_id, polling_backoff=0):
-
-    def has_active_jobs(gi):
-        if has_jobs_in_states(ctx, gi, history_id, ["new", "upload", "waiting", "queued", "running"]):
-            return True
-        else:
-            return None
-
-    timeout = 60 * 60 * 24
-    wait_on(lambda: _retry_on_timeouts(ctx, gi, has_active_jobs), "active jobs", timeout, polling_backoff)
+    # Used to wait for active jobs and then wait for history, but now this is called
+    # after upload is complete and after the invocation has been done scheduling - so
+    # no need to wait for active jobs anymore I think.
 
     def state_func():
         return _retry_on_timeouts(ctx, gi, lambda gi: gi.histories.show_history(history_id))

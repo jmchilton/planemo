@@ -21,10 +21,11 @@ jobs:
           #- unit-diagnostic-servebasic
           #- unit-diagnostic-servebasic-gx-2005
           #- unit-diagnostic-servebasic-gx-master
-          - unit-diagnostic-servebasic-gx-dev
+          # - unit-diagnostic-servebasic-gx-dev
           #- unit-diagnostic-servetraining
           #- unit-diagnostic-servecmd
           #- unit-diagnostic-trainingwfcmd
+          #- unit-diagnostic-wftest
           - unit-nonredundant-noclientbuild-noshed-gx-2005
           - unit-nonredundant-noclientbuild-noshed-gx-dev
           - unit-nonredundant-noclientbuild-noshed

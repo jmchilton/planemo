@@ -26,6 +26,7 @@ from galaxy.util import (
     safe_makedirs,
     unicodify,
 )
+from requests.exceptions import RequestException
 
 from planemo.galaxy.api import summarize_history
 from planemo.io import wait_on
@@ -602,7 +603,7 @@ def _history_id(gi, **kwds):
 def _wait_for_invocation(ctx, gi, history_id, workflow_id, invocation_id, polling_backoff=0):
 
     def state_func():
-        if _retry_on_timeouts(ctx, gi, lambda gi: has_jobs_in_states(gi, history_id, ["error", "deleted", "deleted_new"])):
+        if _retry_on_timeouts(ctx, gi, lambda gi: has_jobs_in_states(ctx, gi, history_id, ["error", "deleted", "deleted_new"])):
             raise Exception("Problem running workflow, one or more jobs failed.")
 
         return _retry_on_timeouts(ctx, gi, lambda gi: gi.workflows.show_invocation(workflow_id, invocation_id))
@@ -618,7 +619,7 @@ def _retry_on_timeouts(ctx, gi, f):
             start_time = time.time()
             try:
                 return f(gi)
-            except Exception:
+            except RequestException:
                 end_time = time.time()
                 if end_time - start_time > 45 and (try_num + 1) < try_count:
                     ctx.vlog("Galaxy seems to have timedout, retrying to fetch status.")
@@ -629,20 +630,19 @@ def _retry_on_timeouts(ctx, gi, f):
         gi.timeout = None
 
 
-def has_jobs_in_states(gi, history_id, states):
+def has_jobs_in_states(ctx, gi, history_id, states):
     params = {"history_id": history_id}
     jobs_url = gi.url + '/jobs'
     jobs = gi.jobs._get(url=jobs_url, params=params)
-
     target_jobs = [j for j in jobs if j["state"] in states]
-
+    # ctx.vlog("Has jobs [%s] in states [%s]" % (len(target_jobs) > 0, states))
     return len(target_jobs) > 0
 
 
 def _wait_for_history(ctx, gi, history_id, polling_backoff=0):
 
     def has_active_jobs(gi):
-        if has_jobs_in_states(gi, history_id, ["new", "upload", "waiting", "queued", "running"]):
+        if has_jobs_in_states(ctx, gi, history_id, ["new", "upload", "waiting", "queued", "running"]):
             return True
         else:
             return None

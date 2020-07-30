@@ -39,11 +39,14 @@ def test_galaxy_wf_tests():
     cat = os.path.join(PROJECT_TEMPLATES_DIR, "demo", "cat.xml")
     test_artifact = os.path.join(TEST_DATA_DIR, "wf1.gxwf.yml")
     runnables = for_paths([test_artifact])
+    # HACK FOR TESTING
     kwds = {
         "engine": "galaxy",
         "no_dependency_resolution": True,
         "paste_test_data_paths": False,
-        "galaxy_branch": target_galaxy_branch(),
+        "galaxy_source": "https://github.com/jmchilton/galaxy",
+        "galaxy_branch": "planemo_test",
+        # "galaxy_branch": target_galaxy_branch(),
         "extra_tools": [random_lines, cat]
     }
     exit_code = t_runnables(

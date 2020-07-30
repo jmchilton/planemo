@@ -108,6 +108,7 @@ def _post_hacked_for_files(url, data=None, params=None, json=None, files=None):
     else:
         data.update(params)
         kwd['data'] = data
+    print("posting to galaxy at url [%s] with kwds [%s]" % (url, kwd))
     return requests.post(url, **kwd)
 
 

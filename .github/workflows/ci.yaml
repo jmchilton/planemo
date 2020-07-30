@@ -26,10 +26,10 @@ jobs:
           #- unit-diagnostic-servecmd
           #- unit-diagnostic-trainingwfcmd
           #- unit-diagnostic-wftest
-          - unit-nonredundant-noclientbuild-noshed-gx-2005
+          # - unit-nonredundant-noclientbuild-noshed-gx-2005
           - unit-nonredundant-noclientbuild-noshed-gx-dev
-          - unit-nonredundant-noclientbuild-noshed
-          - unit-diagnostic-serveclientcmd
+          #- unit-nonredundant-noclientbuild-noshed
+          #- unit-diagnostic-serveclientcmd
     services:
       postgres:
         image: postgres:10.8

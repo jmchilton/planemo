@@ -21,6 +21,7 @@ from galaxy.tool_util.cwl.util import (
     tool_response_to_output,
 )
 from galaxy.tool_util.parser import get_tool_source
+from galaxy.tool_util.verify.interactor import galaxy_requests_post
 from galaxy.util import (
     safe_makedirs,
     unicodify,
@@ -77,41 +78,6 @@ def log_contents_str(config):
         return "No log for this engine type."
 
 
-def _post_hacked_for_files(url, data=None, params=None, json=None, files=None):
-    # copied from tool-util internals - maybe expose this hack as gross as it is
-
-    params = params or {}
-    data = data or {}
-
-    # handle encoded files
-    if files is None:
-        files = data.get("__files", None)
-        if files is not None:
-            del data["__files"]
-
-            # files doesn't really work with json, so dump the parameters
-            # and do a normal POST with request's data parameter.
-            if json:
-                json = False
-                new_items = {}
-                for key, val in data.items():
-                    if isinstance(val, dict) or isinstance(val, list):
-                        new_items[key] = dumps(val)
-                data.update(new_items)
-
-    kwd = {
-        'files': files,
-    }
-    if json:
-        kwd['json'] = data
-        kwd['params'] = params
-    else:
-        data.update(params)
-        kwd['data'] = data
-    print("posting to galaxy at url [%s] with kwds [%s]" % (url, kwd))
-    return requests.post(url, **kwd)
-
-
 class PlanemoStagingInterface(StagingInterace):
 
     def __init__(self, ctx, user_gi, version_major):
@@ -122,7 +88,7 @@ class PlanemoStagingInterface(StagingInterace):
     def _post(self, api_path, payload, files_attached=False):
         params = dict(key=self._user_gi.key)
         url = urljoin(self._user_gi.url, "api/" + api_path)
-        return _post_hacked_for_files(url, data=payload, params=params, json=True).json()
+        return galaxy_requests_post(url, data=payload, params=params, as_json=True).json()
 
     def _attach_file(self, path):
         return attach_file(path)
@@ -253,8 +219,13 @@ def _execute(ctx, config, runnable, job_path, **kwds):
 
 def stage_in(ctx, runnable, config, user_gi, history_id, job_path, **kwds):  # noqa C901
     tool_or_workflow = "tool" if runnable.type in [RunnableType.cwl_tool, RunnableType.galaxy_tool] else "workflow"
+    to_posix_lines = runnable.type.is_galaxy_artifact
     job_dict, datasets = PlanemoStagingInterface(ctx, user_gi, config.version_major).stage(
-        tool_or_workflow, history_id=history_id, job_path=job_path, use_path_paste=config.use_path_paste
+        tool_or_workflow,
+        history_id=history_id,
+        job_path=job_path,
+        use_path_paste=config.use_path_paste,
+        to_posix_lines=to_posix_lines,
     )
 
     if datasets:

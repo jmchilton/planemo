@@ -1,4 +1,5 @@
 import os
+from tempfile import NamedTemporaryFile
 
 from planemo.engine.test import (
     test_runnables as t_runnables
@@ -112,7 +113,7 @@ def test_galaxy_workflow_tags():
             "paste_test_data_paths": False,
             "galaxy_branch": target_galaxy_branch(),
             "extra_tools": [collection_cat_list],
-            "test_output_json": json_out.name
+            "test_output_json": json_out.name,
         }
         try:
             exit_code = t_runnables(

@@ -382,6 +382,9 @@ class TestCase(AbstractTestCase):
         invocation_details = run_response.invocation_details
         if invocation_details is not None:
             data_dict["invocation_details"] = invocation_details
+        execution_details = run_response.execution_details()
+        if execution_details is not None:
+            data_dict["execution_details"] = execution_details
         data_dict["inputs"] = self._job
         return dict(
             id=("%s_%s" % (self._test_id, self.index)),
@@ -575,6 +578,10 @@ class RunResponse(object):
     @abc.abstractproperty
     def invocation_details(self):
         """If workflow invocation details are available, return as dictionary."""
+
+    def execution_details(self):
+        """Dictionary of useful execution context"""
+        return {}
 
     @abc.abstractproperty
     def log(self):

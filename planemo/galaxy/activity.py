@@ -493,6 +493,14 @@ class GalaxyToolRunResponse(GalaxyBaseRunResponse):
                 output_src = {"src": "hdca", "id": output_collection["id"]}
         return output_src
 
+    def execution_details(self):
+        invocation_details = {
+            'history_id': self._history_id,
+            'tool_execution_response': self.api_run_response,
+            'job_info': self.job_info,
+        }
+        return invocation_details
+
 
 class GalaxyWorkflowRunResponse(GalaxyBaseRunResponse):
 
@@ -574,6 +582,17 @@ class GalaxyWorkflowRunResponse(GalaxyBaseRunResponse):
     @property
     def was_successful(self):
         return self.history_state == 'ok' and self.invocation_state == 'scheduled'
+
+    def execution_details(self):
+        invocation_details = {
+            'invocation_id': self._invocation_id,
+            'history_id': self._history_id,
+            'workflow_id': self._workflow_id,
+            'invocation_state': self.invocation_state,
+            'history_state': self.history_state,
+            'error_message': self.error_message,
+        }
+        return invocation_details
 
 
 def _tool_id(tool_path):

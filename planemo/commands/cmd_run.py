@@ -52,16 +52,9 @@ def cli(ctx, runnable_identifier, job_path, **kwds):
     if output_json:
         with open(output_json, "w") as f:
             json.dump(outputs_dict, f)
-    invocation_report = kwds.get("invocation_report", None)
-    if invocation_report:
-        invocation_details = {
-            'invocation_id': run_result._invocation_id,
-            'history_id': run_result._history_id,
-            'workflow_id': run_result._workflow_id,
-            'invocation_state': run_result.invocation_state,
-            'history_state': run_result.history_state,
-            'error_message': run_result.error_message,
-        }
-        with open(invocation_report, "w") as f:
-            json.dump(invocation_details, f, indent=4, sort_keys=True)
+    execution_report = kwds.get("execution_report", None)
+    if execution_report:
+        execution_details = run_result.execution_details()
+        with open(execution_report, "w") as f:
+            json.dump(execution_details, f, indent=4, sort_keys=True)
     return 0

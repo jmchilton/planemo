@@ -2120,6 +2120,11 @@ def tool_init_named_output_option():
         ),
     )
 
+def tool_init_tmp_dir_option():
+    return planemo_option(
+        "--tmp_dir/--no_tmp_dir", default=True, help=("Create a temp directory in the job directory.")
+    )
+
 
 def tool_init_version_command_option():
     return planemo_option(
@@ -2229,4 +2234,5 @@ def job_config_init_options():
         tpv_option(),
         runner_target_option(),
         galaxy_version_option(),
+        tool_init_tmp_dir_option(),
     )

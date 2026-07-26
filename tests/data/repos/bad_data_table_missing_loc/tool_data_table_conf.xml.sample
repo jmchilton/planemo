@@ -1,0 +1,8 @@
+<tables>
+    <!-- References a loc file that is not shipped (no my_index.loc and no
+         my_index.loc.sample), so MissingLocFixture must flag it. -->
+    <table name="my_index" comment_char="#">
+        <columns>value, dbkey, name, path</columns>
+        <file path="tool-data/my_index.loc" />
+    </table>
+</tables>

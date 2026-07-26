@@ -1,0 +1,8 @@
+name: "bad_data_manager_conf"
+owner: "iuc"
+description: "a data manager conf that is not valid XML"
+type: "unrestricted"
+remote_repository_url: "https://github.com/galaxyproject/planemo/tree/master/tests/data/repos/bad_data_manager_conf"
+homepage_url: "http://planemo.readthedocs.org/en/latest/"
+categories:
+  - "Data Managers"

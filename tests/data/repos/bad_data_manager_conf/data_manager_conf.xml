@@ -1,0 +1,4 @@
+<data_managers>
+    <!-- Deliberately malformed: the data_manager start tag is never closed, so the
+         model assembly must fail with a reported error (not a silent exit). -->
+    <data_manager tool_file="data_manager/build.xml" id="build"

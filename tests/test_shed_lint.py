@@ -1,6 +1,17 @@
+import os
 from os.path import join
 
 from .test_utils import CliTestCase
+
+# Injected so the reference-data fixture under tests/data/data_manager (which ships no
+# .shed.yml) realizes as a shed repository for shed_lint.
+DATA_MANAGER_SHED_YML = """name: "data_manager_fetch_genome_dbkeys_all_fasta"
+owner: "iuc"
+description: "a data manager repository"
+type: "unrestricted"
+categories:
+  - "Data Managers"
+"""
 
 
 class ShedLintTestCase(CliTestCase):
@@ -50,6 +61,27 @@ class ShedLintTestCase(CliTestCase):
         # realized repository even though shed_lint copies files into a temp dir.
         with self._isolate_repo("single_tool_required_files"):
             self._check_exit_code(["shed_lint", "--tools", "--skip", "shed_remote_repository_url"])
+
+    def test_data_table_linting_valid(self):
+        # A realistic data-manager repository (manager conf + wrapper + tool data
+        # tables + loc fixtures) lints clean through the repository data-table linters.
+        with self._isolate_with_test_data("data_manager/data_manager_fetch_genome_dbkeys_all_fasta") as f:
+            with open(os.path.join(f, ".shed.yml"), "w") as fh:
+                fh.write(DATA_MANAGER_SHED_YML)
+            self._check_exit_code(["shed_lint", "--skip", "shed_remote_repository_url"])
+
+    def test_data_table_linting_invalid(self):
+        # A tool_data_table_conf referencing a loc file that is not shipped must fail
+        # (MissingLocFixture), proving the galaxy-tool-util linters are wired in.
+        with self._isolate_repo("bad_data_table_missing_loc"):
+            self._check_exit_code(["shed_lint", "--skip", "shed_remote_repository_url"], exit_code=1)
+
+    def test_data_table_linting_assembly_error(self):
+        # A malformed data_manager_conf must fail *and* surface a visible diagnostic
+        # (the assembly-failure message is only emitted if dispatched through lint_ctx).
+        with self._isolate_repo("bad_data_manager_conf"):
+            r = self._check_exit_code(["shed_lint", "--skip", "shed_remote_repository_url"], exit_code=1)
+        assert "Problem assembling repository data table model" in r.output
 
     def test_invalid_nested(self):
         # Created a nested repository with one good and one

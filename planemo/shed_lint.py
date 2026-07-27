@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 from bioblend import ConnectionError
-from galaxy.tool_util.data.bundles.lint import lint_repository_data_tables_bundle
+from galaxy.tool_util.data.bundles.lint import find_and_lint_repository_data_tables
 from galaxy.tool_util.lint import lint_tool_source_with
 from galaxy.tool_util.linters.help import rst_invalid
 from galaxy.tool_util.parser.interface import ToolSource
@@ -122,9 +122,9 @@ def lint_repository(ctx: "PlanemoCliContext", realized_repository: "RealizedRepo
         tools_failed = lint_repository_tools(ctx, realized_repository, lint_ctx, lint_args)
         failed = failed or tools_failed
 
-    # Bridges to the galaxy-tool-util repository data-table linters; the galaxy entry
-    # point manages its own lint_ctx dispatch, like lint_tool_source_with.
-    lint_data_tables(ctx, realized_repository, lint_ctx)
+    # Bridges to the galaxy-tool-util repository data-table linters; galaxy owns
+    # discovery + its own lint_ctx dispatch, like lint_tool_source_with.
+    find_and_lint_repository_data_tables(lint_ctx, realized_repository.path)
 
     lint_ctx.lint("lint_version_bumped", lint_shed_version, realized_repository)
     lint_ctx.lint("lint_shed_remote_repository_url", lint_shed_remote_repository_url, realized_repository)
@@ -148,29 +148,6 @@ def lint_repository_tools(ctx: "PlanemoCliContext", realized_repository: "Realiz
         lint_tool_source_with(lint_ctx, tool_source, extra_modules=lint_args["extra_modules"])
 
 
-DATA_MANAGER_CONF = "data_manager_conf.xml"
-# tool_data_table_conf variants, most-preferred first: the test conf points loc files
-# at real test-data, then the shipped sample, then a plain checked-in conf.
-TOOL_DATA_TABLE_CONF_NAMES = (
-    "tool_data_table_conf.xml.test",
-    "tool_data_table_conf.xml.sample",
-    "tool_data_table_conf.xml",
-)
-
-
-def _find_data_manager_conf(path):
-    candidate = os.path.join(path, DATA_MANAGER_CONF)
-    return candidate if os.path.exists(candidate) else None
-
-
-def _find_tool_data_table_conf(path):
-    for name in TOOL_DATA_TABLE_CONF_NAMES:
-        candidate = os.path.join(path, name)
-        if os.path.exists(candidate):
-            return candidate
-    return None
-
-
 def _iter_valid_tool_sources(ctx, path):
     """Yield ``(tool_path, tool_source)`` for loadable ToolSources under ``path``.
 
@@ -182,30 +159,6 @@ def _iter_valid_tool_sources(ctx, path):
         if not isinstance(tool_source, ToolSource):
             continue
         yield tool_path, tool_source
-
-
-def lint_data_tables(ctx: "PlanemoCliContext", realized_repository: "RealizedRepository", lint_ctx):
-    """Discover the repository's data-table bundle and run the galaxy-tool-util linters.
-
-    Planemo owns discovery -- which ``data_manager_conf`` / ``tool_data_table_conf``
-    files and which consumer tool sources -- and ``lint_repository_data_tables_bundle``
-    assembles + validates them (emitting its own skip / assembly-failure diagnostics
-    and dispatching each linter). Consumer tools are only walked when the repository
-    actually declares a data-table bundle.
-    """
-    path = realized_repository.path
-    data_manager_conf = _find_data_manager_conf(path)
-    tool_data_table_conf = _find_tool_data_table_conf(path)
-    consumer_tool_sources = None
-    if data_manager_conf or tool_data_table_conf:
-        consumer_tool_sources = list(_iter_valid_tool_sources(ctx, path))
-    lint_repository_data_tables_bundle(
-        lint_ctx,
-        path,
-        data_manager_conf=data_manager_conf,
-        tool_data_table_confs=[tool_data_table_conf] if tool_data_table_conf else None,
-        consumer_tool_sources=consumer_tool_sources,
-    )
 
 
 def lint_shed_version(realized_repository: "RealizedRepository", lint_ctx):

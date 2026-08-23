@@ -1850,6 +1850,7 @@ def database_type_option():
         help=(
             "Type of database to use for profile - "
             "'auto', 'sqlite', 'postgres', 'postgres_docker' , and postgres_singularity are available options. "
+            "The default 'auto' means sqlite - a postgres server is only stood up when named. "
             "Use postgres to use an existing postgres server you user can "
             "access without a password via the psql command. Use postgres_docker "
             "to have Planemo manage a docker container running postgres. . Use "

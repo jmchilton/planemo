@@ -2,8 +2,6 @@
 
 from typing import Optional
 
-from galaxy.util.commands import which
-
 from .interface import DatabaseSource
 from .postgres import LocalPostgresDatabaseSource
 from .postgres_docker import DockerPostgresDatabaseSource
@@ -14,14 +12,10 @@ def create_database_source(profile_directory: Optional[str] = None, **kwds) -> D
     """Return a :class:`planemo.database.interface.DatabaseSource` for configuration."""
     database_type = kwds.get("database_type", "auto")
     if database_type == "auto":
-        if which("psql"):
-            database_type = "postgres"
-        elif which("docker"):
-            database_type = "postgres_docker"
-        elif which("singularity"):
-            database_type = "postgres_singularity"
-        else:
-            raise Exception("Cannot find executables for psql or docker, cannot configure a database source.")
+        raise Exception(
+            "Managing a database server requires naming one - pass --database_type with "
+            "postgres, postgres_docker or postgres_singularity."
+        )
 
     if database_type == "postgres":
         return LocalPostgresDatabaseSource(**kwds)

@@ -9,7 +9,6 @@ import os
 import shutil
 
 import click
-from galaxy.util.commands import which
 from gxjobconfinit import (
     build_job_config,
     ConfigArgs,
@@ -84,37 +83,22 @@ def _create_profile_docker(ctx, profile_directory, profile_name, kwds):
 
 
 def _create_profile_local(ctx, profile_directory, profile_name, kwds):
-    database_type = kwds.get("database_type", "auto")
-    allow_sqlite_fallback = database_type == "auto"
+    # A profile that named no backend gets its own sqlite file. Standing a postgres
+    # server up is only worth it when the user asked for one by name.
+    database_type = kwds.get("database_type") or "auto"
     if database_type == "auto":
-        if which("psql"):
-            database_type = "postgres"
-        elif which("docker"):
-            database_type = "postgres_docker"
-        elif which("singularity"):
-            database_type = "postgres_singularity"
-        else:
-            database_type = "sqlite"
+        database_type = "sqlite"
 
-    if database_type != "sqlite":
-        database_source = started_database_source(profile_directory=profile_directory, **kwds)
-        database_identifier = _profile_to_database_identifier(profile_name)
-        try:
-            database_source.create_database(
-                database_identifier,
-            )
-        except RuntimeError:
-            if allow_sqlite_fallback:
-                # If postgres database creation fails (e.g., role doesn't exist, connection issues),
-                # fall back to sqlite
-                database_type = "sqlite"
-            else:
-                raise
-        else:
-            database_connection = database_source.sqlalchemy_url(database_identifier)
     if database_type == "sqlite":
         database_location = os.path.join(profile_directory, "galaxy.sqlite")
         database_connection = DATABASE_LOCATION_TEMPLATE % database_location
+    else:
+        database_source = started_database_source(profile_directory=profile_directory, **kwds)
+        database_identifier = _profile_to_database_identifier(profile_name)
+        database_source.create_database(
+            database_identifier,
+        )
+        database_connection = database_source.sqlalchemy_url(database_identifier)
 
     return {
         "database_type": database_type,

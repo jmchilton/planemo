@@ -108,24 +108,29 @@ def test_runnable_delegated_properties_are_booleans():
     assert Runnable("d", RunnableType.directory).is_single_artifact is False
 
 
-DATABASE_LOCATION = "/tmp/planemo-test-config/galaxy.sqlite"
+@contextlib.contextmanager
+def _database_location():
+    with TempDirectoryContext() as temp_directory_context:
+        yield os.path.join(temp_directory_context.temp_directory, "galaxy.sqlite")
 
 
 def test_database_connection_defaults_to_sqlite():
     """A run that never named a postgres backend stays on the config directory's sqlite file."""
-    for kwds in ({}, {"database_type": None}, {"database_type": "auto"}, {"database_type": "sqlite"}):
-        with _database_connection(DATABASE_LOCATION, **kwds) as connection:
-            assert connection == DATABASE_LOCATION_TEMPLATE % DATABASE_LOCATION, kwds
+    with _database_location() as database_location:
+        for kwds in ({}, {"database_type": None}, {"database_type": "auto"}, {"database_type": "sqlite"}):
+            with _database_connection(database_location, **kwds) as connection:
+                assert connection == DATABASE_LOCATION_TEMPLATE % database_location, kwds
 
 
 def test_database_connection_override_wins():
     """An explicit connection string is used whatever the database type says."""
     conn = "postgresql://username:password@localhost/mydatabase"
-    for database_type in (None, "auto", "postgres"):
-        with _database_connection(DATABASE_LOCATION, database_type=database_type, database_connection=conn) as (
-            connection
-        ):
-            assert connection == conn, database_type
+    with _database_location() as database_location:
+        for database_type in (None, "auto", "postgres"):
+            with _database_connection(database_location, database_type=database_type, database_connection=conn) as (
+                connection
+            ):
+                assert connection == conn, database_type
 
 
 def test_database_connection_manages_named_postgres_backend():
@@ -133,10 +138,11 @@ def test_database_connection_manages_named_postgres_backend():
     database_source = mock.Mock()
     database_source.sqlalchemy_url.return_value = "postgresql://galaxy@localhost/galaxy"
     with mock.patch("planemo.galaxy.config.create_database_source", return_value=database_source):
-        with _database_connection(DATABASE_LOCATION, database_type="postgres") as connection:
-            assert connection == "postgresql://galaxy@localhost/galaxy"
-            database_source.start.assert_called_once_with()
-            database_source.stop.assert_not_called()
+        with _database_location() as database_location:
+            with _database_connection(database_location, database_type="postgres") as connection:
+                assert connection == "postgresql://galaxy@localhost/galaxy"
+                database_source.start.assert_called_once_with()
+                database_source.stop.assert_not_called()
     database_source.stop.assert_called_once_with()
     database_source.sqlalchemy_url.assert_called_once_with("galaxy")
 

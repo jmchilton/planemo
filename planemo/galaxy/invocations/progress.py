@@ -7,7 +7,10 @@ from typing import (
     Set,
 )
 
-from rich.console import Group
+from rich.console import (
+    Console,
+    Group,
+)
 from rich.live import Live
 from rich.markup import escape
 from rich.panel import Panel
@@ -20,6 +23,7 @@ from rich.progress import (
 )
 from typing_extensions import TypedDict
 
+from planemo.console import planemo_console
 from .api import (
     invocation_state_terminal,
     InvocationApi,
@@ -345,6 +349,7 @@ class WorkflowProgressDisplay(Live):
         invocation_id: str,
         display_configuration: Optional[DisplayConfiguration] = None,
         galaxy_url: Optional[str] = None,
+        console: Optional[Console] = None,
     ):
         self.subworkflow_invocation_ids_seen: Set[str] = set()
         self.subworkflow_invocation_ids_completed: Set[str] = set()
@@ -356,7 +361,7 @@ class WorkflowProgressDisplay(Live):
         self.display = display
         self.workflow_progress = WorkflowProgress(display)
         self.subworkflow_progress = WorkflowProgress(display)
-        super().__init__(self._panel(), auto_refresh=False)
+        super().__init__(self._panel(), console=console or planemo_console(), auto_refresh=False)
 
     def _register_subworkflow_invocation_ids_from(self, invocation: Invocation):
         subworkflow_invocation_ids: List[str] = []

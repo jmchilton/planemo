@@ -24,6 +24,7 @@ from rich.progress import (
     TextColumn,
 )
 
+from planemo.console import planemo_console
 from .invocations.api import JOB_ERROR_STATES
 from .invocations.progress_display import DisplayConfiguration
 
@@ -262,6 +263,7 @@ class UploadProgressDisplay(Live):
         history_id: str,
         display_configuration: Optional[DisplayConfiguration] = None,
         galaxy_url: Optional[str] = None,
+        console: Optional[Console] = None,
     ):
         """Initialize upload progress display.
 
@@ -269,17 +271,17 @@ class UploadProgressDisplay(Live):
             history_id: Galaxy history ID where files are being uploaded
             display_configuration: Optional display configuration for styling
             galaxy_url: Optional Galaxy server URL for display
+            console: Rich console to render through, defaulting to Planemo's shared one
         """
         self.history_id = history_id
         self.galaxy_url = galaxy_url
         display = display_configuration or DisplayConfiguration()
         self.display = display
         self.upload_progress = UploadProgress(display)
-        self.console = Console()
         self._upload_job_ids: Set[str] = set()
 
         # Initialize with auto_refresh=False for manual control
-        super().__init__(self._panel(), console=self.console, auto_refresh=False)
+        super().__init__(self._panel(), console=console or planemo_console(), auto_refresh=False)
 
     def get_history_ui_link(self) -> Optional[str]:
         """Get the Galaxy UI link for the history.

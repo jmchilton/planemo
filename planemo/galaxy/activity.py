@@ -1,6 +1,5 @@
 """Module provides generic interface to running Galaxy tools and workflows."""
 
-import contextlib
 import os
 import sys
 import tempfile
@@ -14,7 +13,6 @@ from typing import (
     Tuple,
     Type,
     TYPE_CHECKING,
-    Union,
 )
 from urllib.parse import urljoin
 
@@ -126,7 +124,7 @@ class PlanemoStagingInterface(StagingInterface):
         user_gi: GalaxyInstance,
         version_major: str,
         simultaneous_uploads: bool,
-        upload_progress_display: Optional["UploadProgressDisplay"] = None,
+        upload_progress_display: "UploadProgressDisplay",
     ) -> None:
         self._ctx = ctx
         self._user_gi = user_gi
@@ -154,15 +152,13 @@ class PlanemoStagingInterface(StagingInterface):
         # Track upload jobs for later waiting
         self._upload_jobs.append(job_response)
 
-        # Update progress display if available
-        if self._upload_progress_display:
-            job_summary = _aggregate_job_states(self._upload_jobs, self._user_gi)
-            self._upload_progress_display.update_jobs(self._upload_jobs, job_summary)
+        # Sequential uploads are the default - let this one finish before the
+        # caller stages the next file.
+        if not self._simultaneous_uploads:
+            _wait_for_job(self._user_gi, job_response["id"])
 
-        # In sequential mode, wait for each job immediately if not using progress display
-        if not self._simultaneous_uploads and not self._upload_progress_display:
-            job_id = job_response["id"]
-            _wait_for_job(self._user_gi, job_id)
+        job_summary = _aggregate_job_states(self._upload_jobs, self._user_gi)
+        self._upload_progress_display.update_jobs(self._upload_jobs, job_summary)
 
     def wait_for_uploads(self, check_ok: bool = True) -> None:
         """Wait for all upload jobs to complete.
@@ -173,12 +169,7 @@ class PlanemoStagingInterface(StagingInterface):
         if not self._upload_jobs:
             return
 
-        # If we have a progress display (created in stage_in), use it for polling
-        if self._upload_progress_display:
-            self._wait_for_uploads_with_progress(check_ok, self._upload_progress_display)
-        else:
-            # No progress display - use original behavior
-            self._wait_for_uploads_without_progress(check_ok)
+        self._wait_for_uploads_with_progress(check_ok, self._upload_progress_display)
 
     def _wait_for_uploads_with_progress(self, check_ok: bool, display: UploadProgressDisplay) -> None:
         """Wait for uploads with progress display.
@@ -201,19 +192,6 @@ class PlanemoStagingInterface(StagingInterface):
                 polling_tracker.sleep()
 
         # Verify uploads if requested
-        if check_ok:
-            self._verify_uploads_ok()
-
-    def _wait_for_uploads_without_progress(self, check_ok: bool) -> None:
-        """Wait for uploads without progress display (original behavior).
-
-        Args:
-            check_ok: Whether to verify upload success
-        """
-        for upload_job in self._upload_jobs:
-            job_id = upload_job["id"]
-            _wait_for_job(self._user_gi, job_id)
-
         if check_ok:
             self._verify_uploads_ok()
 
@@ -427,14 +405,7 @@ def stage_in(
     user_gi = config.user_gi
     history_id = _history_id(user_gi, **kwds)
 
-    # Create upload progress display context manager (or nullcontext if disabled)
-    progress_context: Union[UploadProgressDisplay, contextlib.nullcontext]
-    if sys.stdout.isatty():
-        progress_context = UploadProgressDisplay(history_id, galaxy_url=user_gi.base_url)
-    else:
-        progress_context = contextlib.nullcontext(None)
-
-    with progress_context as upload_progress:
+    with UploadProgressDisplay(history_id, galaxy_url=user_gi.base_url) as upload_progress:
         psi = PlanemoStagingInterface(
             ctx, runnable, user_gi, config.version_major, simultaneous_uploads, upload_progress
         )

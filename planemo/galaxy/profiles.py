@@ -269,7 +269,7 @@ def initialize_job_config(ctx, profile_name, **kwds):
         f.write(job_config)
 
     config, profile_config_path = _load_profile_to_json(ctx, profile_name)
-    config["job_config_file"] = os.path.abspath(profile_config_path)
+    config["job_config_file"] = os.path.abspath(job_config_path)
     with open(profile_config_path, "w") as f:
         json.dump(config, f)
     return job_config_path

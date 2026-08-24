@@ -445,7 +445,7 @@ def database_connection_option():
     )
 
 
-def shed_tools_conf_option():
+def shed_tool_conf_option():
     return planemo_option(
         "--shed_tool_conf",
         type=str,
@@ -1437,7 +1437,7 @@ def galaxy_config_options():
         file_path_option(),
         database_connection_option(),
         postgres_database_storage_location_option(),
-        shed_tools_conf_option(),
+        shed_tool_conf_option(),
         shed_tools_directory_option(),
         shed_tool_data_table_config_option(),
         shed_data_manager_config_option(),

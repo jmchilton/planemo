@@ -1738,20 +1738,28 @@ def _shed_config_paths(kwds, config_join):
     shed installs -- tools, their data tables and data managers -- survive
     Galaxy restarts, e.g. across a chunk of workflow tests that reuse a tool.
 
-    Pure path resolution; the caller is responsible for creating directories.
+    The caller is responsible for creating directories. The only filesystem
+    access here is the legacy-name probe described on ``_resolve``.
     """
     shed_data_dir = kwds.get("shed_data_dir")
 
-    def _resolve(kwd, basename):
+    def _resolve(kwd, basename, legacy_basename=None):
         explicit = kwds.get(kwd)
         if explicit:
             return explicit
         if shed_data_dir:
+            # A directory pinned by a Planemo that spelled the file differently
+            # keeps the file it already has, rather than starting an empty one
+            # beside it and reinstalling everything it records.
+            if legacy_basename:
+                legacy = os.path.join(shed_data_dir, legacy_basename)
+                if os.path.exists(legacy):
+                    return legacy
             return os.path.join(shed_data_dir, basename)
         return config_join(basename)
 
     return dict(
-        shed_tool_conf=_resolve("shed_tool_conf", "shed_tools_conf.xml"),
+        shed_tool_conf=_resolve("shed_tool_conf", "shed_tool_conf.xml", "shed_tools_conf.xml"),
         shed_tool_path=_resolve("shed_tool_path", "shed_tools"),
         shed_tool_data_table_config=_resolve("shed_tool_data_table_config", "shed_tool_data_table_conf.xml"),
         shed_data_manager_config_file=_resolve("shed_data_manager_config", "shed_data_manager_conf.xml"),

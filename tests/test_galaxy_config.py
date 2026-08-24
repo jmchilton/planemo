@@ -241,7 +241,7 @@ def _config_join(*args):
 def test_shed_config_paths_default_ephemeral():
     """Without --shed_data_dir the paths fall back to the config directory."""
     paths = _shed_config_paths({}, _config_join)
-    assert paths["shed_tool_conf"] == "/ephemeral/shed_tools_conf.xml"
+    assert paths["shed_tool_conf"] == "/ephemeral/shed_tool_conf.xml"
     assert paths["shed_tool_path"] == "/ephemeral/shed_tools"
     assert paths["shed_tool_data_table_config"] == "/ephemeral/shed_tool_data_table_conf.xml"
     assert paths["shed_data_manager_config_file"] == "/ephemeral/shed_data_manager_conf.xml"
@@ -250,10 +250,25 @@ def test_shed_config_paths_default_ephemeral():
 def test_shed_config_paths_seeded_by_shed_data_dir():
     """--shed_data_dir seeds all four shed-install config paths."""
     paths = _shed_config_paths({"shed_data_dir": "/persist"}, _config_join)
-    assert paths["shed_tool_conf"] == "/persist/shed_tools_conf.xml"
+    assert paths["shed_tool_conf"] == "/persist/shed_tool_conf.xml"
     assert paths["shed_tool_path"] == "/persist/shed_tools"
     assert paths["shed_tool_data_table_config"] == "/persist/shed_tool_data_table_conf.xml"
     assert paths["shed_data_manager_config_file"] == "/persist/shed_data_manager_conf.xml"
+
+
+def test_shed_config_paths_keep_legacy_shed_tool_conf_name(tmp_path):
+    """A --shed_data_dir pinned before the rename keeps its existing file."""
+    legacy = tmp_path / "shed_tools_conf.xml"
+    legacy.write_text("<toolbox/>")
+    paths = _shed_config_paths({"shed_data_dir": str(tmp_path)}, _config_join)
+    assert paths["shed_tool_conf"] == str(legacy)
+
+
+def test_shed_config_paths_explicit_value_wins_over_legacy(tmp_path):
+    """An explicit --shed_tool_conf still beats both names."""
+    (tmp_path / "shed_tools_conf.xml").write_text("<toolbox/>")
+    kwds = {"shed_data_dir": str(tmp_path), "shed_tool_conf": "/explicit/conf.xml"}
+    assert _shed_config_paths(kwds, _config_join)["shed_tool_conf"] == "/explicit/conf.xml"
 
 
 def test_shed_config_paths_individual_override_wins():

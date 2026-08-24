@@ -209,8 +209,8 @@ def galaxy_version_option():
     return planemo_option(
         "--galaxy_version",
         type=str,
-        default="24.2",
-        help="Version of Galaxy to target for configuration (default 24.2).",
+        default=None,
+        help="Version of Galaxy to target for configuration (defaults to the newest Galaxy the generator knows).",
     )
 
 

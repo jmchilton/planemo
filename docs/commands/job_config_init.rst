@@ -50,6 +50,7 @@ Initialize an small Galaxy job config file for hosted workflow runs.
       --runner [local|slurm|drmaa|k8s|condor]
                                       Galaxy runner (e.g. DRM) to target.
       --galaxy_version TEXT           Version of Galaxy to target for configuration
-                                      (default 24.2).
+                                      (defaults to the newest Galaxy the generator
+                                      knows).
       --help                          Show this message and exit.
     

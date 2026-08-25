@@ -7,6 +7,8 @@ from planemo.engine.interface import BaseEngine
 from .cwltool import CwlToolEngine
 from .galaxy import (
     DockerizedManagedGalaxyEngine,
+    EmbeddedGalaxyEngine,
+    EmbeddedGalaxyEngineWithSingularityDB,
     ExternalGalaxyEngine,
     LocalManagedGalaxyEngine,
     LocalManagedGalaxyEngineWithSingularityDB,
@@ -19,7 +21,7 @@ UNKNOWN_ENGINE_TYPE_MESSAGE = "Unknown engine type specified [%s]."
 def is_galaxy_engine(**kwds):
     """Return True iff the engine configured is :class:`GalaxyEngine`."""
     engine_type_str = kwds.get("engine", "galaxy")
-    return engine_type_str in ["galaxy", "docker_galaxy", "external_galaxy"]
+    return engine_type_str in ["galaxy", "embedded_galaxy", "docker_galaxy", "external_galaxy"]
 
 
 def build_engine(ctx, **kwds):
@@ -30,6 +32,11 @@ def build_engine(ctx, **kwds):
             engine_type = LocalManagedGalaxyEngineWithSingularityDB
         else:
             engine_type = LocalManagedGalaxyEngine
+    elif engine_type_str == "embedded_galaxy":
+        if "database_type" in kwds and kwds["database_type"] == "postgres_singularity":
+            engine_type = EmbeddedGalaxyEngineWithSingularityDB
+        else:
+            engine_type = EmbeddedGalaxyEngine
     elif engine_type_str == "docker_galaxy":
         engine_type = DockerizedManagedGalaxyEngine
     elif engine_type_str == "external_galaxy":

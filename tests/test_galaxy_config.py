@@ -10,8 +10,10 @@ from planemo.galaxy.config import (
     _all_tool_paths,
     _shared_galaxy_properties,
     _shed_config_paths,
+    embedded_galaxy_config,
     galaxy_config,
     get_refgenie_config,
+    local_galaxy_config,
     tail_log_directory,
     write_galaxy_config,
 )
@@ -179,6 +181,110 @@ def test_tool_evaluation_strategy_default_not_set():
     with TempDirectoryContext() as tdc:
         props = _shared_galaxy_properties(tdc.temp_directory, {}, for_tests=False)
     assert "tool_evaluation_strategy" not in props
+
+
+def test_embedded_galaxy_config_is_checkout_independent(tmp_path):
+    config_directory = tmp_path / "config"
+    config_directory.mkdir()
+    test_data = tmp_path / "test-data"
+    test_data.mkdir()
+    tool_path = os.path.join(os.path.dirname(__file__), "data", "tools", "two_tests.xml")
+    dependency_dir = tmp_path / "custom-dependencies"
+    ctx = create_test_context()
+
+    with embedded_galaxy_config(
+        ctx,
+        [for_path(tool_path)],
+        config_directory=str(config_directory),
+        test_data=str(test_data),
+        tool_dependency_dir=str(dependency_dir),
+        host="127.0.0.1",
+    ) as config:
+        with open(config.galaxy_config_file) as config_fh:
+            config_data = yaml.safe_load(config_fh)
+        file_properties = config_data["galaxy"]
+        properties = config.galaxy_properties
+
+        assert "gravity" not in config_data
+        assert properties["auto_configure_logging"] is False
+        assert properties["configure_logging"] is False
+        assert "configure_logging" not in file_properties
+        assert properties["enable_celery_tasks"] is True
+        assert properties["interactivetools_enable"] is False
+        assert properties["monitor_thread_join_timeout"] == 5
+        assert "use_display_applications" not in properties
+        assert properties["watch_tools"] is False
+        assert properties["tool_data_table_config_path"].endswith("empty_tool_data_table_conf.xml")
+        assert properties["amqp_internal_connection"] == (f"sqlalchemy+sqlite:///{config_directory / 'control.sqlite'}")
+        assert properties["celery_conf"] == {
+            "broker_url": "memory://",
+            "result_backend": "rpc://localhost",
+            "worker_hijack_root_logger": False,
+        }
+        assert properties["bootstrap_admin_api_key"] == config.master_api_key
+        assert "master_api_key" not in properties
+        assert all(value is not None for value in properties.values())
+        assert properties["tool_dependency_dir"] == str(dependency_dir)
+        assert dependency_dir.is_dir()
+        assert "tour_config_dir" not in properties
+        assert config.galaxy_url.startswith("http://127.0.0.1:")
+        assert config.env["GALAXY_CONFIG_FILE"] == config.galaxy_config_file
+        assert "GALAXY_DEVELOPMENT_ENVIRONMENT" not in config.env
+
+        with open(properties["job_config_file"]) as job_config_fh:
+            job_config = yaml.safe_load(job_config_fh)
+        assert "handling" not in job_config
+
+
+def test_embedded_test_configuration_uses_explicit_empty_plugin_directories(tmp_path):
+    config_directory = tmp_path / "config"
+    config_directory.mkdir()
+    ctx = create_test_context()
+
+    with embedded_galaxy_config(
+        ctx,
+        [],
+        for_tests=True,
+        config_directory=str(config_directory),
+    ) as config:
+        properties = config.galaxy_properties
+
+        assert properties["tour_config_dir"] == str(config_directory / "empty")
+        assert properties["visualization_plugins_directory"] == str(config_directory / "empty")
+        assert properties["interactive_environment_plugins_directory"] == str(config_directory / "empty")
+
+
+def test_shared_config_refactor_preserves_checkout_runtime(tmp_path):
+    galaxy_root = tmp_path / "galaxy"
+    galaxy_package = galaxy_root / "lib" / "galaxy"
+    galaxy_package.mkdir(parents=True)
+    (galaxy_package / "version.py").write_text('VERSION = "25.0.1"')
+    config_directory = tmp_path / "config"
+    config_directory.mkdir()
+    test_data = tmp_path / "test-data"
+    test_data.mkdir()
+    dependency_dir = tmp_path / "checkout-dependencies"
+    ctx = create_test_context()
+
+    with local_galaxy_config(
+        ctx,
+        [],
+        galaxy_root=str(galaxy_root),
+        config_directory=str(config_directory),
+        test_data=str(test_data),
+        tool_dependency_dir=str(dependency_dir),
+        disable_gxits=True,
+    ) as config:
+        with open(config.env["GALAXY_CONFIG_FILE"]) as config_fh:
+            config_data = yaml.safe_load(config_fh)
+
+        assert config_data["gravity"]["galaxy_root"] == str(galaxy_root)
+        assert config_data["gravity"]["gx_it_proxy"] == {"enable": False}
+        assert config.env["GALAXY_DEVELOPMENT_ENVIRONMENT"] == "1"
+        assert config.env["GALAXY_CONFIG_OVERRIDE_TOOL_DEPENDENCY_DIR"] == str(dependency_dir)
+        assert dependency_dir.is_dir()
+        with open(config.env["GALAXY_CONFIG_OVERRIDE_JOB_CONFIG_FILE"]) as job_config_fh:
+            assert "handling" not in yaml.safe_load(job_config_fh)
 
 
 @contextlib.contextmanager

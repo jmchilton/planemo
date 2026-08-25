@@ -40,5 +40,5 @@ def cli(ctx, uris, **kwds):
     """
     paths = uris_to_paths(ctx, uris)
     runnables = for_paths(paths)
-    with galaxy_serve(ctx, runnables, **kwds):
-        pass
+    with galaxy_serve(ctx, runnables, **kwds) as config:
+        config.wait_for_serve()

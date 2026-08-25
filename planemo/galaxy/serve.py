@@ -9,6 +9,7 @@ from planemo import (
     network_util,
 )
 from .config import galaxy_config
+from .embedded import serve_embedded
 from .ephemeris_sleep import sleep
 from .run import (
     log_galaxy_command,
@@ -57,6 +58,10 @@ def _check_startup_command(config, startup_process, exit_code):
 @contextlib.contextmanager
 def _serve(ctx, runnables, **kwds):
     engine = kwds.get("engine", "galaxy")
+    if engine == "embedded_galaxy":
+        with serve_embedded(ctx, runnables, **kwds) as config:
+            yield config
+        return
     if engine == "docker_galaxy":
         kwds["dockerize"] = True
 

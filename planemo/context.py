@@ -32,8 +32,8 @@ class PlanemoContextInterface(metaclass=abc.ABCMeta):
         """Specify how an option was set."""
 
     @abc.abstractmethod
-    def get_option_source(self, param_name):
-        """Return OptionSource value indicating how the option was set."""
+    def get_option_source(self, param_name, default=None):
+        """Return how an option was set, or ``default`` when it is unknown."""
 
     @abc.abstractproperty
     def global_config(self):
@@ -85,10 +85,9 @@ class PlanemoContext(PlanemoContextInterface):
             assert param_name not in self.option_source, f"Option source for [{param_name}] already set"
         self.option_source[param_name] = option_source
 
-    def get_option_source(self, param_name: str) -> "OptionSource":
-        """Return OptionSource value indicating how the option was set."""
-        assert param_name in self.option_source, f"No option source for [{param_name}]"
-        return self.option_source[param_name]
+    def get_option_source(self, param_name: str, default=None) -> Optional["OptionSource"]:
+        """Return how an option was set, or ``default`` when it is unknown."""
+        return self.option_source.get(param_name, default)
 
     @property
     def global_config(self) -> Dict[str, Any]:

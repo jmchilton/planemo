@@ -21,6 +21,7 @@ from planemo.galaxy.activity import (
     GalaxyBaseRunResponse,
 )
 from planemo.galaxy.config import external_galaxy_config
+from planemo.galaxy.embedded import serve_embedded
 from planemo.galaxy.serve import serve_daemon
 from planemo.runnable import (
     DelayedGalaxyToolTestCase,
@@ -191,8 +192,9 @@ class LocalManagedGalaxyEngine(GalaxyEngine):
             if self._ctx.verbose:
                 print("Failed to install tool repositories, Galaxy log:")
                 print(config.log_contents)
-                print("Galaxy root:")
-                io.shell(["ls", config.galaxy_root])
+                if config.galaxy_root:
+                    print("Galaxy root:")
+                    io.shell(["ls", config.galaxy_root])
             raise
 
     def _serve_kwds(self):
@@ -200,6 +202,57 @@ class LocalManagedGalaxyEngine(GalaxyEngine):
 
 
 class LocalManagedGalaxyEngineWithSingularityDB(LocalManagedGalaxyEngine):
+    def run(self, runnables, job_paths, output_collectors: Optional[List[Callable]] = None):
+        with SingularityPostgresDatabaseSource(**self._kwds.copy()):
+            run_responses = super().run(runnables, job_paths, output_collectors)
+        return run_responses
+
+
+class EmbeddedGalaxyEngine(LocalManagedGalaxyEngine):
+    """A managed Galaxy loaded from packages into the Planemo process."""
+
+    def __init__(self, ctx, **kwds):
+        super().__init__(ctx, **kwds)
+        self._active_embedded_config = None
+        self._active_embedded_runnable_uris = set()
+
+    @contextlib.contextmanager
+    def _serve_runnables(self, runnables, *, for_tests=False):
+        serve_kwds = self._serve_kwds()
+        serve_kwds["for_tests"] = for_tests
+        with serve_embedded(self._ctx, runnables, **serve_kwds) as config:
+            if "install_args_list" in serve_kwds:
+                self.shed_install(config)
+            yield config
+
+    @contextlib.contextmanager
+    def ensure_runnables_served(self, runnables):
+        active_config = getattr(self, "_active_embedded_config", None)
+        if active_config is not None:
+            requested_uris = {runnable.uri for runnable in runnables}
+            if not requested_uris.issubset(self._active_embedded_runnable_uris):
+                raise RuntimeError("The active embedded Galaxy was not configured for all requested runnables.")
+            yield active_config
+        else:
+            with self._serve_runnables(runnables) as config:
+                yield config
+
+    def test(self, runnables, test_timeout):
+        # GalaxyEngine divides native tool tests from workflow/job-file tests.
+        # Keep those inner execution paths on one embedded application because
+        # Galaxy does not promise independent reconstruction in one process.
+        self._check_can_run_all(runnables)
+        with self._serve_runnables(runnables, for_tests=True) as config:
+            self._active_embedded_config = config
+            self._active_embedded_runnable_uris = {runnable.uri for runnable in runnables}
+            try:
+                return super().test(runnables, test_timeout)
+            finally:
+                self._active_embedded_config = None
+                self._active_embedded_runnable_uris = set()
+
+
+class EmbeddedGalaxyEngineWithSingularityDB(EmbeddedGalaxyEngine):
     def run(self, runnables, job_paths, output_collectors: Optional[List[Callable]] = None):
         with SingularityPostgresDatabaseSource(**self._kwds.copy()):
             run_responses = super().run(runnables, job_paths, output_collectors)
@@ -260,6 +313,8 @@ def expand_test_cases(config, test_cases):
 
 __all__ = (
     "DockerizedManagedGalaxyEngine",
+    "EmbeddedGalaxyEngine",
+    "EmbeddedGalaxyEngineWithSingularityDB",
     "ExternalGalaxyEngine",
     "LocalManagedGalaxyEngine",
     "LocalManagedGalaxyEngineWithSingularityDB",

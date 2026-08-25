@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from string import Template
 from tempfile import (
     mkdtemp,
@@ -184,6 +185,21 @@ SERVICE_LOG_TAIL_LINES = 100
 UNINITIALIZED = object()
 
 
+@dataclass(frozen=True)
+class _ManagedGalaxyConfigArtifacts:
+    """Files and settings shared by checkout and embedded Galaxy runtimes."""
+
+    config_directory: str
+    env: Dict[str, Any]
+    test_data_dir: Optional[str]
+    port: int
+    server_name: str
+    master_api_key: str
+    galaxy_config_file: str
+    galaxy_properties: Dict[str, Any]
+    kwds: Dict[str, Any]
+
+
 @contextlib.contextmanager
 def galaxy_config(ctx, runnables, **kwds):
     """Set up a ``GalaxyConfig`` in an auto-cleaned context."""
@@ -340,9 +356,229 @@ def docker_galaxy_config(ctx, runnables, for_tests=False, **kwds):
         )
 
 
+def _configure_mulled_containers(ctx, kwds):
+    """Normalize dependency options shared by local Galaxy runtimes."""
+    if kwds.get("mulled_containers", False):
+        if not kwds.get("docker", False):
+            if ctx.get_option_source("docker", None) != OptionSource.cli:
+                kwds["docker"] = True
+            else:
+                raise Exception("Specified no docker and mulled containers together.")
+        conda_default_options = ("conda_auto_init", "conda_auto_install")
+        use_conda_options = ("dependency_resolution", "conda_use_local", "conda_prefix", "conda_exec")
+        if not any(kwds.get(_) for _ in use_conda_options) and all(
+            ctx.get_option_source(_, OptionSource.default) == OptionSource.default for _ in conda_default_options
+        ):
+            kwds["no_dependency_resolution"] = kwds["no_conda_auto_init"] = True
+
+
+def _configure_embedded_properties(properties, config_join):
+    # Embedded mode targets the new package-only Galaxy release, so use the
+    # canonical name while checkout-backed engines retain compatibility with
+    # Galaxy versions that still require ``master_api_key``.
+    properties["bootstrap_admin_api_key"] = properties.pop("master_api_key")
+    properties.update(
+        auto_configure_logging=False,
+        # ``build_galaxy_web_app`` forwards this constructor-only keyword to
+        # GalaxyManagerApplication; it is deliberately omitted from galaxy.yml
+        # below because it is not a Galaxy configuration-schema property.
+        configure_logging=False,
+        enable_celery_tasks=True,
+        interactivetools_enable=False,
+        monitor_thread_join_timeout=5,
+        watch_tools=False,
+        amqp_internal_connection=f"sqlalchemy+sqlite:///{config_join('control.sqlite')}",
+        celery_conf={
+            "broker_url": "memory://",
+            "result_backend": "rpc://localhost",
+            "worker_hijack_root_logger": False,
+        },
+    )
+
+
+def _write_embedded_config(properties, template_args, config_join):
+    galaxy_properties = {
+        key: _sub(value, template_args) if isinstance(value, str) else value
+        for key, value in properties.items()
+        if value is not None
+    }
+    galaxy_config_file = config_join("galaxy.yml")
+    env = {"GALAXY_CONFIG_FILE": galaxy_config_file}
+    file_properties = {key: value for key, value in galaxy_properties.items() if key != "configure_logging"}
+    write_file(galaxy_config_file, json.dumps({"galaxy": file_properties}))
+    return env, galaxy_config_file, galaxy_properties
+
+
+def _write_checkout_config(properties, template_args, config_join, galaxy_root, server_name, kwds):
+    env = _build_env_for_galaxy(properties, template_args)
+    env["GALAXY_DEVELOPMENT_ENVIRONMENT"] = "1"
+    env["GALAXY_LOG"] = f"{server_name}.log"
+    env["GALAXY_PID"] = f"{server_name}.pid"
+    write_galaxy_config(
+        galaxy_root=galaxy_root,
+        properties=properties,
+        env=env,
+        kwds=kwds,
+        template_args=template_args,
+        config_join=config_join,
+    )
+    return env, env["GALAXY_CONFIG_FILE"], properties
+
+
+def _prepare_managed_galaxy_config(
+    *,
+    ctx,
+    config_directory,
+    runnables,
+    test_data_dir,
+    tool_data_tables,
+    data_manager_config_paths,
+    galaxy_root,
+    for_tests,
+    embedded,
+    kwds,
+):
+    """Generate the checkout-independent files used by local Galaxy engines."""
+
+    def config_join(*args):
+        return os.path.join(config_directory, *args)
+
+    ensure_dependency_resolvers_conf_configured(ctx, kwds, config_join("resolvers_conf.xml"))
+    all_tool_paths = _all_tool_paths(runnables, galaxy_root=galaxy_root, extra_tools=kwds.get("extra_tools"))
+    kwds["all_in_one_handling"] = True
+    _handle_job_config_file(config_directory, "main", test_data_dir, all_tool_paths, kwds)
+    _handle_file_sources(config_directory, test_data_dir, kwds)
+    _handle_refgenie_config(config_directory, galaxy_root, kwds)
+    _handle_vault_config(config_directory, kwds)
+
+    file_path = kwds.get("file_path") or config_join("files")
+    _ensure_directory(file_path)
+    dependency_dir = kwds.get("tool_dependency_dir") or config_join("deps")
+    _ensure_directory(dependency_dir)
+
+    shed_config_paths = _shed_config_paths(kwds, config_join)
+    shed_tool_conf = shed_config_paths["shed_tool_conf"]
+    shed_tool_path = shed_config_paths["shed_tool_path"]
+    shed_tool_data_table_config = shed_config_paths["shed_tool_data_table_config"]
+    shed_data_manager_config_file = shed_config_paths["shed_data_manager_config_file"]
+    _ensure_directory(shed_tool_path)
+
+    empty_tool_conf = config_join("empty_tool_conf.xml")
+    if embedded and not tool_data_tables:
+        # Installed Galaxy otherwise falls back to checkout-relative sample
+        # tables and emits errors for files that do not exist in wheel mode.
+        empty_tool_data_table_conf = config_join("empty_tool_data_table_conf.xml")
+        write_file(empty_tool_data_table_conf, SHED_TOOL_DATA_TABLE_CONF_TEMPLATE)
+        tool_data_tables = [empty_tool_data_table_conf]
+    tool_conf = config_join("tool_conf.xml")
+    # ``config_directory`` was already consumed positionally and forwarding it
+    # again would raise a duplicate-argument TypeError in both local modes.
+    shed_config_kwds = {key: value for key, value in kwds.items() if key != "config_directory"}
+    sheds_config_path = _configure_sheds_config_file(ctx, config_directory, runnables, **shed_config_kwds)
+    database_location = config_join("galaxy.sqlite")
+    master_api_key = _get_master_api_key(kwds)
+    port = _get_port(kwds)
+    server_name = "main"
+    template_args = dict(
+        port=port,
+        host=kwds.get("host", "127.0.0.1"),
+        server_name=server_name,
+        temp_directory=config_directory,
+        shed_tool_path=shed_tool_path,
+        database_location=database_location,
+        tool_conf=tool_conf,
+        debug=kwds.get("debug", "true"),
+        id_secret=kwds.get("id_secret", hashlib.md5(str(time.time()).encode("utf-8")).hexdigest()),
+        log_level="DEBUG" if ctx.verbose else "INFO",
+    )
+    tool_config_file = f"{tool_conf},{shed_tool_conf}"
+    properties = _shared_galaxy_properties(config_directory, kwds, for_tests=for_tests)
+    properties.update(
+        dict(
+            server_name=server_name,
+            enable_celery_tasks="true",
+            ftp_upload_dir_template="${ftp_upload_dir}",
+            ftp_upload_purge="false",
+            ftp_upload_dir=test_data_dir or os.path.abspath("."),
+            ftp_upload_site="Test Data",
+            check_upload_content="false",
+            tool_dependency_dir=dependency_dir,
+            file_path=file_path,
+            new_file_path="${temp_directory}/tmp",
+            tool_config_file=tool_config_file,
+            tool_sheds_config_file=sheds_config_path,
+            manage_dependency_relationships="false",
+            job_working_directory="${temp_directory}/job_working_directory",
+            template_cache_path="${temp_directory}/compiled_templates",
+            citation_cache_type="file",
+            citation_cache_data_dir="${temp_directory}/citations/data",
+            citation_cache_lock_dir="${temp_directory}/citations/lock",
+            database_auto_migrate="true",
+            enable_beta_tool_formats="true",
+            id_secret="${id_secret}",
+            log_level="${log_level}",
+            debug="${debug}",
+            watch_tools="auto",
+            default_job_shell="/bin/bash",
+            tool_data_table_config_path=",".join(tool_data_tables) if tool_data_tables else None,
+            data_manager_config_file=",".join(data_manager_config_paths) or None,
+            integrated_tool_panel_config="${temp_directory}/integrated_tool_panel_conf.xml",
+            migrated_tools_config=empty_tool_conf,
+            test_data_dir=test_data_dir,
+            shed_tool_data_table_config=shed_tool_data_table_config,
+            shed_data_manager_config_file=shed_data_manager_config_file,
+            outputs_to_working_directory="true",
+            object_store_store_by="uuid",
+        )
+    )
+    _handle_container_resolution(ctx, kwds, properties)
+    properties["database_connection"] = _database_connection(database_location, **kwds)
+    if embedded:
+        _configure_embedded_properties(properties, config_join)
+    else:
+        properties["amqp_internal_connection"] = f"sqlalchemy+sqlite:///{config_join('celery_broker.sqlite')}"
+    if kwds.get("mulled_containers", False):
+        properties["mulled_channels"] = kwds.get("conda_ensure_channels", "")
+    _handle_kwd_overrides(properties, kwds)
+
+    _write_tool_conf(ctx, all_tool_paths, tool_conf)
+    write_file(empty_tool_conf, EMPTY_TOOL_CONF_TEMPLATE)
+    shed_tool_conf_contents = _sub(SHED_TOOL_CONF_TEMPLATE, template_args)
+    _write_shed_config_files(
+        shed_tool_conf,
+        shed_tool_conf_contents,
+        shed_tool_data_table_config,
+        shed_data_manager_config_file,
+    )
+
+    if embedded:
+        env, galaxy_config_file, galaxy_properties = _write_embedded_config(properties, template_args, config_join)
+    else:
+        env, galaxy_config_file, galaxy_properties = _write_checkout_config(
+            properties,
+            template_args,
+            config_join,
+            galaxy_root,
+            server_name,
+            kwds,
+        )
+
+    return _ManagedGalaxyConfigArtifacts(
+        config_directory=config_directory,
+        env=env,
+        test_data_dir=test_data_dir,
+        port=port,
+        server_name=server_name,
+        master_api_key=master_api_key,
+        galaxy_config_file=galaxy_config_file,
+        galaxy_properties=galaxy_properties,
+        kwds=kwds,
+    )
+
+
 @contextlib.contextmanager
 def local_galaxy_config(ctx, runnables, for_tests=False, **kwds):
-    """Set up a ``GalaxyConfig`` in an auto-cleaned context."""
+    """Set up a checkout-backed ``GalaxyConfig`` in an auto-cleaned context."""
 
     test_data_dir = _find_test_data(runnables, **kwds)
     tool_data_tables = _find_tool_data_table(runnables, test_data_dir=test_data_dir, **kwds)
@@ -355,20 +591,7 @@ def local_galaxy_config(ctx, runnables, for_tests=False, **kwds):
         if os.path.isdir(galaxy_root) and install_galaxy:
             raise Exception(f"{galaxy_root} is an existing non-empty directory, cannot install Galaxy again")
 
-    # Duplicate block in docker variant above.
-    if kwds.get("mulled_containers", False):
-        if not kwds.get("docker", False):
-            if ctx.get_option_source("docker") != OptionSource.cli:
-                kwds["docker"] = True
-            else:
-                raise Exception("Specified no docker and mulled containers together.")
-        conda_default_options = ("conda_auto_init", "conda_auto_install")
-        use_conda_options = ("dependency_resolution", "conda_use_local", "conda_prefix", "conda_exec")
-        if not any(kwds.get(_) for _ in use_conda_options) and all(
-            ctx.get_option_source(_) == OptionSource.default for _ in conda_default_options
-        ):
-            # If using mulled_containers and default conda options disable conda resolution
-            kwds["no_dependency_resolution"] = kwds["no_conda_auto_init"] = True
+    _configure_mulled_containers(ctx, kwds)
 
     with _config_directory(ctx, **kwds) as config_directory:
 
@@ -384,159 +607,58 @@ def local_galaxy_config(ctx, runnables, for_tests=False, **kwds):
             galaxy_root = config_join("galaxy-dev")
         if not os.path.isdir(galaxy_root):
             _install_galaxy(ctx, galaxy_root, install_env, kwds)
-
-        server_name = "main"
-        # Once we don't have to support earlier than 18.01 - try putting these files
-        # somewhere better than with Galaxy.
-        log_file = f"{server_name}.log"
-        pid_file = f"{server_name}.pid"
-        ensure_dependency_resolvers_conf_configured(ctx, kwds, os.path.join(config_directory, "resolvers_conf.xml"))
-        all_tool_paths = _all_tool_paths(runnables, galaxy_root=galaxy_root, extra_tools=kwds.get("extra_tools"))
-        kwds["all_in_one_handling"] = True
-        _handle_job_config_file(config_directory, server_name, test_data_dir, all_tool_paths, kwds)
-        _handle_file_sources(config_directory, test_data_dir, kwds)
-        _handle_refgenie_config(config_directory, galaxy_root, kwds)
-        _handle_vault_config(config_directory, kwds)
-        file_path = kwds.get("file_path") or config_join("files")
-        _ensure_directory(file_path)
-
-        tool_dependency_dir = kwds.get("tool_dependency_dir") or config_join("deps")
-        _ensure_directory(tool_dependency_dir)
-
-        shed_config_paths = _shed_config_paths(kwds, config_join)
-        shed_tool_conf = shed_config_paths["shed_tool_conf"]
-        shed_tool_path = shed_config_paths["shed_tool_path"]
-        shed_tool_data_table_config = shed_config_paths["shed_tool_data_table_config"]
-        shed_data_manager_config_file = shed_config_paths["shed_data_manager_config_file"]
-
-        empty_tool_conf = config_join("empty_tool_conf.xml")
-
-        tool_conf = config_join("tool_conf.xml")
-
-        _ensure_directory(shed_tool_path)
-
-        sheds_config_path = _configure_sheds_config_file(ctx, config_directory, runnables, **kwds)
-
-        database_location = config_join("galaxy.sqlite")
-        master_api_key = _get_master_api_key(kwds)
-        dependency_dir = os.path.join(config_directory, "deps")
-        _ensure_directory(shed_tool_path)
-        port = _get_port(kwds)
-        template_args = dict(
-            port=port,
-            host=kwds.get("host", "127.0.0.1"),
-            server_name=server_name,
-            temp_directory=config_directory,
-            shed_tool_path=shed_tool_path,
-            database_location=database_location,
-            tool_conf=tool_conf,
-            debug=kwds.get("debug", "true"),
-            id_secret=kwds.get("id_secret", hashlib.md5(str(time.time()).encode("utf-8")).hexdigest()),
-            log_level="DEBUG" if ctx.verbose else "INFO",
-        )
-        tool_config_file = f"{tool_conf},{shed_tool_conf}"
-        # Setup both galaxy_email and older test user test@bx.psu.edu
-        # as admins for command_line, etc...
-        properties = _shared_galaxy_properties(config_directory, kwds, for_tests=for_tests)
-        properties.update(
-            dict(
-                server_name="main",
-                enable_celery_tasks="true",
-                ftp_upload_dir_template="${ftp_upload_dir}",
-                ftp_upload_purge="false",
-                ftp_upload_dir=test_data_dir or os.path.abspath("."),
-                ftp_upload_site="Test Data",
-                check_upload_content="false",
-                tool_dependency_dir=dependency_dir,
-                file_path=file_path,
-                new_file_path="${temp_directory}/tmp",
-                tool_config_file=tool_config_file,
-                tool_sheds_config_file=sheds_config_path,
-                manage_dependency_relationships="false",
-                job_working_directory="${temp_directory}/job_working_directory",
-                template_cache_path="${temp_directory}/compiled_templates",
-                citation_cache_type="file",
-                citation_cache_data_dir="${temp_directory}/citations/data",
-                citation_cache_lock_dir="${temp_directory}/citations/lock",
-                database_auto_migrate="true",
-                enable_beta_tool_formats="true",
-                id_secret="${id_secret}",
-                log_level="${log_level}",
-                debug="${debug}",
-                watch_tools="auto",
-                default_job_shell="/bin/bash",  # For conda dependency resolution
-                tool_data_table_config_path=",".join(tool_data_tables) if tool_data_tables else None,
-                data_manager_config_file=",".join(data_manager_config_paths)
-                or None,  # without 'or None' may raise IOError in galaxy (see #946)
-                integrated_tool_panel_config=("${temp_directory}/integrated_tool_panel_conf.xml"),
-                migrated_tools_config=empty_tool_conf,
-                test_data_dir=test_data_dir,  # TODO: make gx respect this
-                shed_tool_data_table_config=shed_tool_data_table_config,
-                shed_data_manager_config_file=shed_data_manager_config_file,
-                outputs_to_working_directory="true",  # this makes Galaxy's files dir RO for dockerized testing
-                object_store_store_by="uuid",
-            )
-        )
-        _handle_container_resolution(ctx, kwds, properties)
-        properties["database_connection"] = _database_connection(database_location, **kwds)
-        # Use a separate SQLite database for the Celery message broker to avoid
-        # write lock contention between gunicorn and Celery workers during startup.
-        amqp_broker_path = config_join("celery_broker.sqlite")
-        properties["amqp_internal_connection"] = f"sqlalchemy+sqlite:///{amqp_broker_path}"
-        if kwds.get("mulled_containers", False):
-            properties["mulled_channels"] = kwds.get("conda_ensure_channels", "")
-
-        _handle_kwd_overrides(properties, kwds)
-
-        # TODO: consider following property
-        # watch_tool = False
-        # datatypes_config_file = config/datatypes_conf.xml
-        # welcome_url = /static/welcome.html
-        # logo_url = /
-        # sanitize_all_html = True
-        # serve_xss_vulnerable_mimetypes = False
-        # track_jobs_in_database = None
-        # retry_job_output_collection = 0
-
-        env = _build_env_for_galaxy(properties, template_args)
-        env.update(install_env)
-        env["GALAXY_DEVELOPMENT_ENVIRONMENT"] = "1"
-        # Following are needed in 18.01 to prevent Galaxy from changing log and pid.
-        # https://github.com/galaxyproject/planemo/issues/788
-        env["GALAXY_LOG"] = log_file
-        env["GALAXY_PID"] = pid_file
-        write_galaxy_config(
+        artifacts = _prepare_managed_galaxy_config(
+            ctx=ctx,
+            config_directory=config_directory,
+            runnables=runnables,
+            test_data_dir=test_data_dir,
+            tool_data_tables=tool_data_tables,
+            data_manager_config_paths=data_manager_config_paths,
             galaxy_root=galaxy_root,
-            properties=properties,
-            env=env,
+            for_tests=for_tests,
+            embedded=False,
             kwds=kwds,
-            template_args=template_args,
-            config_join=config_join,
         )
-
-        _write_tool_conf(ctx, all_tool_paths, tool_conf)
-        write_file(empty_tool_conf, EMPTY_TOOL_CONF_TEMPLATE)
-
-        shed_tool_conf_contents = _sub(SHED_TOOL_CONF_TEMPLATE, template_args)
-        _write_shed_config_files(
-            shed_tool_conf,
-            shed_tool_conf_contents,
-            shed_tool_data_table_config,
-            shed_data_manager_config_file,
-        )
+        artifacts.env.update(install_env)
 
         yield LocalGalaxyConfig(
             ctx,
-            config_directory,
-            env,
-            test_data_dir,
-            port,
-            server_name,
-            master_api_key,
+            artifacts.config_directory,
+            artifacts.env,
+            artifacts.test_data_dir,
+            artifacts.port,
+            artifacts.server_name,
+            artifacts.master_api_key,
             runnables,
             galaxy_root,
-            kwds,
+            artifacts.kwds,
         )
+
+
+@contextlib.contextmanager
+def embedded_galaxy_config(ctx, runnables, for_tests=False, **kwds):
+    """Generate configuration for a wheel-installed, in-process Galaxy."""
+
+    test_data_dir = _find_test_data(runnables, **kwds)
+    tool_data_tables = _find_tool_data_table(runnables, test_data_dir=test_data_dir, **kwds)
+    data_manager_config_paths = [r.data_manager_conf_path for r in runnables if r.data_manager_conf_path]
+    _configure_mulled_containers(ctx, kwds)
+    kwds["disable_gxits"] = True
+
+    with _config_directory(ctx, **kwds) as config_directory:
+        artifacts = _prepare_managed_galaxy_config(
+            ctx=ctx,
+            config_directory=config_directory,
+            runnables=runnables,
+            test_data_dir=test_data_dir,
+            tool_data_tables=tool_data_tables,
+            data_manager_config_paths=data_manager_config_paths,
+            galaxy_root=None,
+            for_tests=for_tests,
+            embedded=True,
+            kwds=kwds,
+        )
+        yield EmbeddedGalaxyConfig(ctx, artifacts, runnables)
 
 
 def _init_interactivetools_db(path):
@@ -908,6 +1030,9 @@ class BaseGalaxyConfig(GalaxyInterface):
         self._target_version = UNINITIALIZED
         self._target_user_config = UNINITIALIZED
 
+    def wait_for_serve(self):
+        """Wait while a foreground server remains active, if needed."""
+
     @property
     def gi(self):
         assert self.galaxy_url
@@ -1087,12 +1212,64 @@ class BaseManagedGalaxyConfig(BaseGalaxyConfig):
         self.test_data_dir = test_data_dir
         self.port = port
         self.server_name = server_name
+        self.galaxy_root = None
 
     @property
     def log_file(self):
         """Log file used when planemo serves this Galaxy instance."""
         file_name = f"{self.server_name}.log"
         return file_name
+
+    @property
+    def default_use_path_paste(self):
+        return self.user_is_admin
+
+
+class EmbeddedGalaxyConfig(BaseManagedGalaxyConfig):
+    """Configuration and diagnostics for a wheel-installed Galaxy."""
+
+    def __init__(self, ctx, artifacts, runnables):
+        super().__init__(
+            ctx,
+            artifacts.config_directory,
+            artifacts.env,
+            artifacts.test_data_dir,
+            artifacts.port,
+            artifacts.server_name,
+            artifacts.master_api_key,
+            runnables,
+            artifacts.kwds,
+        )
+        self.galaxy_config_file = artifacts.galaxy_config_file
+        self.galaxy_properties = artifacts.galaxy_properties
+        host = artifacts.kwds.get("host", "127.0.0.1")
+        self.galaxy_url = f"http://{host}:{artifacts.port}"
+
+    @property
+    def log_file(self):
+        return os.path.join(self.config_directory, "embedded.log")
+
+    @property
+    def log_contents(self):
+        if not os.path.exists(self.log_file):
+            return ""
+        with open(self.log_file, errors="replace") as log_fh:
+            return log_fh.read()
+
+    @property
+    def service_log_contents(self) -> Dict[str, str]:
+        contents = "".join(deque(self.log_contents.splitlines(keepends=True), SERVICE_LOG_TAIL_LINES)).rstrip()
+        return {"embedded.log": contents} if contents else {}
+
+    def cleanup(self):
+        shutil.rmtree(self.config_directory, CLEANUP_IGNORE_ERRORS)
+
+    def wait_for_serve(self):
+        # Checkout-backed foreground serving blocks inside Galaxy's subprocess;
+        # the in-process runtime has already yielded and must wait explicitly.
+        from .serve import sleep_for_serve
+
+        sleep_for_serve()
 
 
 class DockerGalaxyConfig(BaseManagedGalaxyConfig):
@@ -1383,12 +1560,6 @@ class LocalGalaxyConfig(BaseManagedGalaxyConfig):
 
     def cleanup(self):
         shutil.rmtree(self.config_directory, CLEANUP_IGNORE_ERRORS)
-
-    @property
-    def default_use_path_paste(self):
-        # If Planemo started a local, native Galaxy instance assume files URLs can be
-        # pasted.
-        return self.user_is_admin
 
 
 def _database_connection(database_location, **kwds):

@@ -167,12 +167,24 @@ class LocalManagedGalaxyEngine(GalaxyEngine):
     """
 
     @contextlib.contextmanager
+    def _serve_context(self, runnables, **serve_kwds):
+        with serve_daemon(self._ctx, runnables, **serve_kwds) as config:
+            yield config
+
+    @contextlib.contextmanager
+    def _serve_runnables(self, runnables, *, for_tests=False):
+        serve_kwds = self._serve_kwds()
+        serve_kwds["for_tests"] = for_tests
+        with self._serve_context(runnables, **serve_kwds) as config:
+            if "install_args_list" in serve_kwds:
+                self.shed_install(config)
+            yield config
+
+    @contextlib.contextmanager
     def ensure_runnables_served(self, runnables):
         # TODO: define an interface for this - not everything in config would make sense for a
         # pre-existing Galaxy interface.
-        with serve_daemon(self._ctx, runnables, **self._serve_kwds()) as config:
-            if "install_args_list" in self._serve_kwds():
-                self.shed_install(config)
+        with self._serve_runnables(runnables) as config:
             yield config
 
     def shed_install(self, config):
@@ -201,11 +213,15 @@ class LocalManagedGalaxyEngine(GalaxyEngine):
         return self._kwds.copy()
 
 
-class LocalManagedGalaxyEngineWithSingularityDB(LocalManagedGalaxyEngine):
+class SingularityDBMixin:
     def run(self, runnables, job_paths, output_collectors: Optional[List[Callable]] = None):
         with SingularityPostgresDatabaseSource(**self._kwds.copy()):
             run_responses = super().run(runnables, job_paths, output_collectors)
         return run_responses
+
+
+class LocalManagedGalaxyEngineWithSingularityDB(SingularityDBMixin, LocalManagedGalaxyEngine):
+    pass
 
 
 class EmbeddedGalaxyEngine(LocalManagedGalaxyEngine):
@@ -217,17 +233,13 @@ class EmbeddedGalaxyEngine(LocalManagedGalaxyEngine):
         self._active_embedded_runnable_uris = set()
 
     @contextlib.contextmanager
-    def _serve_runnables(self, runnables, *, for_tests=False):
-        serve_kwds = self._serve_kwds()
-        serve_kwds["for_tests"] = for_tests
+    def _serve_context(self, runnables, **serve_kwds):
         with serve_embedded(self._ctx, runnables, **serve_kwds) as config:
-            if "install_args_list" in serve_kwds:
-                self.shed_install(config)
             yield config
 
     @contextlib.contextmanager
     def ensure_runnables_served(self, runnables):
-        active_config = getattr(self, "_active_embedded_config", None)
+        active_config = self._active_embedded_config
         if active_config is not None:
             requested_uris = {runnable.uri for runnable in runnables}
             if not requested_uris.issubset(self._active_embedded_runnable_uris):
@@ -252,11 +264,8 @@ class EmbeddedGalaxyEngine(LocalManagedGalaxyEngine):
                 self._active_embedded_runnable_uris = set()
 
 
-class EmbeddedGalaxyEngineWithSingularityDB(EmbeddedGalaxyEngine):
-    def run(self, runnables, job_paths, output_collectors: Optional[List[Callable]] = None):
-        with SingularityPostgresDatabaseSource(**self._kwds.copy()):
-            run_responses = super().run(runnables, job_paths, output_collectors)
-        return run_responses
+class EmbeddedGalaxyEngineWithSingularityDB(SingularityDBMixin, EmbeddedGalaxyEngine):
+    pass
 
 
 class DockerizedManagedGalaxyEngine(LocalManagedGalaxyEngine):

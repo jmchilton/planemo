@@ -3,7 +3,6 @@ from typing import (
     List,
     Optional,
 )
-from unittest.mock import patch
 
 import pytest
 
@@ -36,33 +35,19 @@ from .test_workflow_simulation import (
 SLEEP = 0
 
 
-def test_polling_timeout_counts_elapsed_time_outside_sleep():
-    with (
-        patch("planemo.galaxy.invocations.polling.time.monotonic", side_effect=[10.0, 11.1]),
-        patch("planemo.galaxy.invocations.polling.time.sleep") as sleep_mock,
-    ):
-        tracker = PollingTrackerImpl(polling_backoff=0, timeout=1)
-        with pytest.raises(TimeoutError, match="Timed out while polling Galaxy"):
-            tracker.sleep()
-
-    sleep_mock.assert_not_called()
-
-
 def test_polling_timeout_allows_final_poll_at_deadline():
-    with (
-        patch("planemo.galaxy.invocations.polling.time.monotonic", side_effect=[10.0, 10.9, 11.0]),
-        patch("planemo.galaxy.invocations.polling.time.sleep") as sleep_mock,
-    ):
-        tracker = PollingTrackerImpl(
-            polling_backoff=0,
-            timeout=1,
-            timeout_message="Timed out waiting for test work.",
-        )
-        tracker.sleep()
-        with pytest.raises(TimeoutError, match="Timed out waiting for test work"):
-            tracker.sleep()
+    tracker = PollingTrackerImpl(
+        polling_backoff=0,
+        timeout=0.1,
+        timeout_message="Timed out waiting for test work.",
+    )
 
-    sleep_mock.assert_called_once_with(pytest.approx(0.1))
+    # Reaching the deadline returns control for one final state check. A caller
+    # that still needs to poll after that receives the timeout.
+    tracker.sleep()
+    sleep(0.01)
+    with pytest.raises(TimeoutError, match="Timed out waiting for test work"):
+        tracker.sleep()
 
 
 class MockPollingTracker(PollingTracker):

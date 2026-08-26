@@ -6,6 +6,7 @@ Galaxy build with galaxyproject/galaxy#23360.
 
 import contextlib
 import json
+import multiprocessing
 import os
 import shutil
 import threading
@@ -37,9 +38,12 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
         from planemo.galaxy import embedded
 
         load_runtime_dependencies = embedded._load_runtime_dependencies
+        baseline_threads = set(threading.enumerate())
+        baseline_child_pids = {process.pid for process in multiprocessing.active_children()}
         construction_count = 0
         celery_state_reads = []
         celery_results = []
+        config_directories = []
 
         def load_counted_runtime_dependencies():
             dependencies = load_runtime_dependencies()
@@ -53,6 +57,7 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
             def counted_build(*args, **kwds):
                 nonlocal construction_count
                 construction_count += 1
+                config_directories.append(os.path.dirname(kwds["global_conf"]["__file__"]))
                 return build_galaxy_web_app(*args, **kwds)
 
             @contextlib.contextmanager
@@ -138,6 +143,15 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
         from galaxy import app as galaxy_app_module
 
         assert galaxy_app_module.app is None
-        assert not any(
-            thread.name == "planemo-embedded-uvicorn" and thread.is_alive() for thread in threading.enumerate()
+        remaining_threads = sorted(
+            thread.name for thread in threading.enumerate() if thread not in baseline_threads and thread.is_alive()
         )
+        remaining_child_processes = sorted(
+            f"{process.name} (pid={process.pid})"
+            for process in multiprocessing.active_children()
+            if process.pid not in baseline_child_pids and process.is_alive()
+        )
+        assert remaining_threads == []
+        assert remaining_child_processes == []
+        assert len(config_directories) == 1
+        assert not os.path.exists(config_directories[0])

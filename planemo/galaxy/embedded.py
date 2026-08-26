@@ -3,6 +3,7 @@
 import contextlib
 import copy
 import logging
+import multiprocessing
 import os
 import socket
 import threading
@@ -25,6 +26,7 @@ INSTALL_MESSAGE = (
 )
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 WORKER_QUEUES = ("galaxy.internal", "galaxy.external")
+CLEANUP_DIAGNOSTIC_TIMEOUT = 30
 
 
 @dataclass(frozen=True)
@@ -341,6 +343,37 @@ def _cleanup(ctx, description, operation):
         ctx.vlog(f"Failed while {description}.", exception=exc)
 
 
+def _report_slow_cleanup(ctx, timeout):
+    current_thread = threading.current_thread()
+    thread_names = sorted(
+        thread.name for thread in threading.enumerate() if thread is not current_thread and thread.is_alive()
+    )
+    process_names = sorted(
+        f"{process.name} (pid={process.pid})" for process in multiprocessing.active_children() if process.is_alive()
+    )
+    active_threads = ", ".join(thread_names) or "none"
+    active_processes = ", ".join(process_names) or "none"
+    ctx.log(
+        f"Embedded Galaxy cleanup exceeded {timeout:g} seconds. "
+        f"Active threads: {active_threads}. Active child processes: {active_processes}."
+    )
+
+
+@contextlib.contextmanager
+def _cleanup_diagnostic_budget(ctx, timeout=CLEANUP_DIAGNOSTIC_TIMEOUT):
+    """Report live runtime resources if cooperative cleanup exceeds its budget."""
+    timer = threading.Timer(timeout, _report_slow_cleanup, args=(ctx, timeout))
+    timer.name = "planemo-embedded-cleanup-diagnostics"
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
+        with contextlib.suppress(KeyboardInterrupt):
+            timer.join(timeout=1)
+
+
 def _validate_application(dependencies, galaxy_app):
     if not galaxy_app.is_job_handler:
         raise RuntimeError("Embedded Galaxy was not configured as a job handler.")
@@ -365,59 +398,70 @@ def serve_embedded(ctx, runnables=None, **kwds):
     bound_host, bound_port = sock.getsockname()[:2]
     kwds["host"] = bound_host
     kwds["port"] = bound_port
+    cleanup_stack = contextlib.ExitStack()
+    cleanup_stack.callback(sock.close)
+    dependencies = None
+    web_app = None
+    worker_runtime = None
+    uvicorn_runtime = None
+    previous_global_app = None
     try:
-        with embedded_galaxy_config(ctx, runnables, **kwds) as config:
-            with _patched_environment(config.env), _embedded_logging(ctx, config.log_file):
-                dependencies = _load_runtime_dependencies()
-                web_app = None
-                worker_runtime = None
-                uvicorn_runtime = None
-                previous_global_app = dependencies.galaxy_app_module.app
-                try:
-                    try:
-                        web_app = dependencies.build_galaxy_web_app(
-                            config.galaxy_properties,
-                            global_conf={"__file__": config.galaxy_config_file},
-                            register_shutdown_at_exit=False,
-                        )
-                    except BaseException:
-                        if dependencies.galaxy_app_module.app is not previous_global_app:
-                            dependencies.galaxy_app_module.app = previous_global_app
-                        raise
-                    galaxy_app = web_app.galaxy_app
-                    _validate_application(dependencies, galaxy_app)
+        config = cleanup_stack.enter_context(embedded_galaxy_config(ctx, runnables, **kwds))
+        cleanup_stack.enter_context(_patched_environment(config.env))
+        cleanup_stack.enter_context(_embedded_logging(ctx, config.log_file))
+        dependencies = _load_runtime_dependencies()
+        previous_global_app = dependencies.galaxy_app_module.app
+        try:
+            web_app = dependencies.build_galaxy_web_app(
+                config.galaxy_properties,
+                global_conf={"__file__": config.galaxy_config_file},
+                register_shutdown_at_exit=False,
+            )
+        except BaseException:
+            if dependencies.galaxy_app_module.app is not previous_global_app:
+                dependencies.galaxy_app_module.app = previous_global_app
+            raise
+        galaxy_app = web_app.galaxy_app
+        _validate_application(dependencies, galaxy_app)
 
-                    worker_runtime = _start_celery_worker(dependencies)
+        worker_runtime = _start_celery_worker(dependencies)
 
-                    uvicorn_runtime = _start_uvicorn(dependencies, web_app.asgi_app, sock)
-                    if not sleep(
-                        config.galaxy_url,
-                        verbose=ctx.verbose,
-                        timeout=kwds.get("galaxy_startup_timeout", 900),
-                    ):
-                        if uvicorn_runtime.errors:
-                            raise RuntimeError(
-                                "Embedded Galaxy's uvicorn server failed during startup."
-                            ) from uvicorn_runtime.errors[0]
-                        raise RuntimeError(
-                            f"Attempted to serve embedded Galaxy at {config.galaxy_url}, but it failed to start."
-                            f"\nGalaxy log contents:\n{config.log_contents}"
-                        )
-                    config.install_workflows()
-                    yield config
-                finally:
-                    if uvicorn_runtime is not None:
-                        _cleanup(ctx, "stopping uvicorn", lambda: _stop_uvicorn(ctx, uvicorn_runtime))
-                    if worker_runtime is not None:
-                        _cleanup(ctx, "stopping the Celery worker", lambda: _stop_celery_worker(worker_runtime))
-                    _cleanup(ctx, "stopping Celery's fork pool", lambda: _stop_fork_pool(dependencies.celery_app))
-                    if web_app is not None:
-                        galaxy_app = web_app.galaxy_app
-                        _cleanup(ctx, "shutting down Galaxy", galaxy_app.shutdown)
-                        if dependencies.galaxy_app_module.app is galaxy_app:
-                            dependencies.galaxy_app_module.app = previous_global_app
+        uvicorn_runtime = _start_uvicorn(dependencies, web_app.asgi_app, sock)
+        if not sleep(
+            config.galaxy_url,
+            verbose=ctx.verbose,
+            timeout=kwds.get("galaxy_startup_timeout", 900),
+        ):
+            if uvicorn_runtime.errors:
+                raise RuntimeError(
+                    "Embedded Galaxy's uvicorn server failed during startup."
+                ) from uvicorn_runtime.errors[0]
+            raise RuntimeError(
+                f"Attempted to serve embedded Galaxy at {config.galaxy_url}, but it failed to start."
+                f"\nGalaxy log contents:\n{config.log_contents}"
+            )
+        config.install_workflows()
+        yield config
     finally:
-        sock.close()
+        with _cleanup_diagnostic_budget(ctx):
+            if uvicorn_runtime is not None:
+                _cleanup(ctx, "stopping uvicorn", lambda: _stop_uvicorn(ctx, uvicorn_runtime))
+            if worker_runtime is not None:
+                _cleanup(ctx, "stopping the Celery worker", lambda: _stop_celery_worker(worker_runtime))
+            if dependencies is not None:
+                _cleanup(
+                    ctx,
+                    "stopping Celery's fork pool",
+                    lambda: _stop_fork_pool(dependencies.celery_app),
+                )
+            if web_app is not None:
+                galaxy_app = web_app.galaxy_app
+                # Galaxy registers model-engine disposal as part of application
+                # shutdown; do not dispose it twice here.
+                _cleanup(ctx, "shutting down Galaxy", galaxy_app.shutdown)
+                if dependencies.galaxy_app_module.app is galaxy_app:
+                    dependencies.galaxy_app_module.app = previous_global_app
+            _cleanup(ctx, "restoring embedded Galaxy state", cleanup_stack.close)
 
 
 __all__ = (

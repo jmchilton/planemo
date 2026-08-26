@@ -4,6 +4,7 @@ import contextlib
 import logging
 import os
 import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -255,6 +256,29 @@ def test_partial_worker_entry_terminates_the_captured_controller():
         embedded._start_celery_worker(dependencies)
 
     assert events == ["controller created", "controller terminated"]
+
+
+def test_slow_cleanup_reports_live_runtime_resources():
+    reported = threading.Event()
+
+    class DiagnosticContext(_Context):
+        def log(self, message, *args):
+            super().log(message, *args)
+            reported.set()
+
+    ctx = DiagnosticContext()
+    with embedded._cleanup_diagnostic_budget(ctx, timeout=0.01):
+        assert reported.wait(timeout=1)
+
+    assert len(ctx.messages) == 1
+    message = ctx.messages[0]
+    assert "cleanup exceeded 0.01 seconds" in message
+    assert "Active threads:" in message
+    assert "MainThread" in message
+    assert "Active child processes:" in message
+    assert not any(
+        thread.name == "planemo-embedded-cleanup-diagnostics" and thread.is_alive() for thread in threading.enumerate()
+    )
 
 
 @pytest.mark.parametrize(

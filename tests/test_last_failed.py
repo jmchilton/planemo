@@ -12,13 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import planemo.engine.interface as _engine_iface
-from planemo.engine.interface import BaseEngine
 from planemo.test.results import StructuredData
-
-# Importing test_utils first causes planemo.cli → planemo.runnable to be fully
-# initialized before planemo.engine.interface is imported below, preventing the
-# circular import that otherwise occurs when planemo.engine is loaded in isolation.
 from .test_utils import create_test_context
 
 # ---------------------------------------------------------------------------
@@ -44,38 +38,42 @@ def _make_test_case(test_id: str, index: int) -> MagicMock:
     return tc
 
 
-class _MinimalEngine(BaseEngine):
-    """Stub engine that records which test cases reach _collect_test_results."""
-
-    handled_runnable_types = []
-
-    def __init__(self, ctx, submitted, **kwds):
-        super().__init__(ctx, **kwds)
-        self._submitted = submitted
-
-    def _check_can_run_all(self, runnables):
-        """No-op: allow any runnable type in tests."""
-
-    def _run(self, runnables, job_paths, output_collectors=None):
-        return []
-
-    def _collect_test_results(self, cases, test_timeout):
-        self._submitted.extend(cases)
-        return []
-
-
 def _run_engine_filter(test_cases, kwds):
     """Call BaseEngine.test() with a stub cases() and return submitted cases."""
+    # Importing the engine at module scope introduces a collection-order
+    # dependency through planemo.runnable. Keep this test double local so the
+    # normal test helpers finish initializing Planemo first.
+    import planemo.engine.interface as engine_interface
+
+    class MinimalEngine(engine_interface.BaseEngine):
+        """Stub engine that records cases reaching _collect_test_results."""
+
+        handled_runnable_types = []
+
+        def __init__(self, ctx, submitted, **kwds):
+            super().__init__(ctx, **kwds)
+            self._submitted = submitted
+
+        def _check_can_run_all(self, runnables):
+            """No-op: allow any runnable type in tests."""
+
+        def _run(self, runnables, job_paths, output_collectors=None):
+            return []
+
+        def _collect_test_results(self, cases, test_timeout):
+            self._submitted.extend(cases)
+            return []
+
     submitted = []
-    engine = _MinimalEngine(create_test_context(), submitted, **kwds)
+    engine = MinimalEngine(create_test_context(), submitted, **kwds)
 
     fake_runnable = MagicMock()
-    original_cases = _engine_iface.cases
-    _engine_iface.cases = lambda _: test_cases
+    original_cases = engine_interface.cases
+    engine_interface.cases = lambda _: test_cases
     try:
         engine.test([fake_runnable], test_timeout=0)
     finally:
-        _engine_iface.cases = original_cases
+        engine_interface.cases = original_cases
 
     return submitted
 

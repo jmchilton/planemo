@@ -65,7 +65,13 @@ class GalaxyEngine(BaseEngine, metaclass=abc.ABCMeta):
         RunnableType.directory,
     ]
 
-    def _run(self, runnables, job_paths, output_collectors: Optional[List[Callable]] = None):
+    def _run(
+        self,
+        runnables,
+        job_paths,
+        output_collectors: Optional[List[Callable]] = None,
+        test_timeout=None,
+    ):
         """Run job in Galaxy."""
         results = []
         if not output_collectors:
@@ -77,7 +83,10 @@ class GalaxyEngine(BaseEngine, metaclass=abc.ABCMeta):
             for runnable, job_path, collect_output in zip(runnables, job_paths, output_collectors):
                 self._ctx.vlog(f"Serving artifact [{runnable}] with Galaxy.")
                 self._ctx.vlog(f"Running job path [{job_path}]")
-                run_response = execute(self._ctx, config, runnable, job_path, **self._kwds)
+                execution_kwds = self._kwds.copy()
+                if test_timeout is not None:
+                    execution_kwds["test_timeout"] = test_timeout
+                run_response = execute(self._ctx, config, runnable, job_path, **execution_kwds)
                 results.append(run_response)
                 if collect_output is not None:
                     collect_output(run_response)

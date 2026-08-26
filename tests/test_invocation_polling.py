@@ -3,6 +3,9 @@ from typing import (
     List,
     Optional,
 )
+from unittest.mock import patch
+
+import pytest
 
 from planemo.galaxy.invocations.api import Invocation as InvocationResponse
 from planemo.galaxy.invocations.api import (
@@ -12,6 +15,7 @@ from planemo.galaxy.invocations.api import (
 )
 from planemo.galaxy.invocations.polling import (
     PollingTracker,
+    PollingTrackerImpl,
     wait_for_invocation_and_jobs,
 )
 from planemo.galaxy.invocations.progress import WorkflowProgressDisplay
@@ -30,6 +34,18 @@ from .test_workflow_simulation import (
 )
 
 SLEEP = 0
+
+
+def test_polling_timeout_counts_elapsed_time_outside_sleep():
+    with (
+        patch("planemo.galaxy.invocations.polling.time.monotonic", side_effect=[10.0, 11.1]),
+        patch("planemo.galaxy.invocations.polling.time.sleep") as sleep_mock,
+    ):
+        tracker = PollingTrackerImpl(polling_backoff=0, timeout=1)
+        with pytest.raises(TimeoutError, match="Timed out while polling Galaxy"):
+            tracker.sleep()
+
+    sleep_mock.assert_not_called()
 
 
 class MockPollingTracker(PollingTracker):

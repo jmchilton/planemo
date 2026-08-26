@@ -4,6 +4,7 @@ import contextlib
 import os
 import sys
 import tempfile
+import time
 import traceback
 from datetime import datetime
 from typing import (
@@ -57,7 +58,6 @@ from planemo.galaxy.upload_progress import (
     _aggregate_job_states,
     UploadProgressDisplay,
 )
-from planemo.io import wait_on
 from planemo.runnable import (
     ErrorRunResponse,
     get_outputs,
@@ -127,6 +127,7 @@ class PlanemoStagingInterface(StagingInterface):
         version_major: str,
         simultaneous_uploads: bool,
         upload_progress_display: Optional["UploadProgressDisplay"] = None,
+        deadline=None,
     ) -> None:
         self._ctx = ctx
         self._user_gi = user_gi
@@ -134,6 +135,7 @@ class PlanemoStagingInterface(StagingInterface):
         self._version_major = version_major
         self._simultaneous_uploads = simultaneous_uploads
         self._upload_progress_display = upload_progress_display
+        self._deadline = deadline
         self._upload_jobs: List[Dict[str, Any]] = []
 
     def _post(self, api_path: str, payload: Dict[str, Any], files_attached: bool = False) -> Dict[str, Any]:
@@ -162,7 +164,7 @@ class PlanemoStagingInterface(StagingInterface):
         # In sequential mode, wait for each job immediately if not using progress display
         if not self._simultaneous_uploads and not self._upload_progress_display:
             job_id = job_response["id"]
-            _wait_for_job(self._user_gi, job_id)
+            _wait_for_job(self._user_gi, job_id, deadline=self._deadline)
 
     def wait_for_uploads(self, check_ok: bool = True) -> None:
         """Wait for all upload jobs to complete.
@@ -187,7 +189,7 @@ class PlanemoStagingInterface(StagingInterface):
             check_ok: Whether to verify upload success
             display: Upload progress display instance
         """
-        polling_tracker = PollingTrackerImpl(polling_backoff=0)
+        polling_tracker = PollingTrackerImpl(polling_backoff=0, deadline=self._deadline)
 
         while not display.upload_progress.terminal:
             # Aggregate current job states
@@ -212,7 +214,7 @@ class PlanemoStagingInterface(StagingInterface):
         """
         for upload_job in self._upload_jobs:
             job_id = upload_job["id"]
-            _wait_for_job(self._user_gi, job_id)
+            _wait_for_job(self._user_gi, job_id, deadline=self._deadline)
 
         if check_ok:
             self._verify_uploads_ok()
@@ -261,6 +263,12 @@ class PlanemoStagingInterface(StagingInterface):
 def _execute(  # noqa C901
     ctx: "PlanemoCliContext", config: "BaseGalaxyConfig", runnable: Runnable, job_path: str, fail_fast=False, **kwds
 ) -> "GalaxyBaseRunResponse":
+    test_timeout = kwds.get("test_timeout")
+    test_deadline = kwds.get("_test_deadline")
+    if test_deadline is None and test_timeout is not None:
+        test_deadline = time.monotonic() + test_timeout
+        kwds["_test_deadline"] = test_deadline
+
     user_gi = config.user_gi
     admin_gi = config.gi
     run_response = None
@@ -290,7 +298,7 @@ def _execute(  # noqa C901
             job = tool_run_response["jobs"][0]
             job_id = job["id"]
             try:
-                final_state = _wait_for_job(user_gi, job_id, timeout=kwds.get("test_timeout"))
+                final_state = _wait_for_job(user_gi, job_id, deadline=test_deadline)
             except Exception:
                 summarize_history(ctx, user_gi, history_id)
                 raise
@@ -330,6 +338,8 @@ def _execute(  # noqa C901
             start_datetime=start_datetime,
             log=log_contents_str(config),
             fail_fast=fail_fast,
+            timeout=test_timeout,
+            deadline=test_deadline,
         )
 
     else:
@@ -374,6 +384,8 @@ def invocation_to_run_response(
     start_datetime=None,
     log=None,
     fail_fast=False,
+    timeout=None,
+    deadline=None,
 ):
     start_datetime = start_datetime or datetime.now()
     invocation_id = invocation["id"]
@@ -390,6 +402,8 @@ def invocation_to_run_response(
             user_gi=user_gi,
             polling_backoff=polling_backoff,
             fail_fast=fail_fast,
+            timeout=timeout,
+            deadline=deadline,
         )
         if final_invocation_state not in ("ok", "skipped", "scheduled", "completed"):
             msg = f"Failed to run workflow [{workflow_id}], at least one job is in [{final_invocation_state}] state."
@@ -436,7 +450,13 @@ def stage_in(
 
     with progress_context as upload_progress:
         psi = PlanemoStagingInterface(
-            ctx, runnable, user_gi, config.version_major, simultaneous_uploads, upload_progress
+            ctx,
+            runnable,
+            user_gi,
+            config.version_major,
+            simultaneous_uploads,
+            upload_progress,
+            deadline=kwds.get("_test_deadline"),
         )
         job_dict, datasets = psi.stage(
             tool_or_workflow,
@@ -949,8 +969,10 @@ def wait_for_invocation_and_jobs(
     user_gi: GalaxyInstance,
     polling_backoff: int,
     fail_fast: bool = False,
+    timeout=None,
+    deadline=None,
 ):
-    polling_tracker = PollingTrackerImpl(polling_backoff)
+    polling_tracker = PollingTrackerImpl(polling_backoff, timeout=timeout, deadline=deadline)
     invocation_api = BioblendInvocationApi(ctx, user_gi)
     with WorkflowProgressDisplay(invocation_id, galaxy_url=user_gi.base_url) as workflow_progress_display:
         final_invocation_state, job_state, error_message = polling_wait_for_invocation_and_jobs(
@@ -984,14 +1006,14 @@ def _wait_for_history(ctx, gi, history_id, polling_backoff=0):
     return _wait_on_state(state_func, polling_backoff)
 
 
-def _wait_for_job(gi, job_id, timeout=None):
+def _wait_for_job(gi, job_id, timeout=None, deadline=None):
     def state_func():
         return gi.jobs.show_job(job_id, full_details=True)
 
-    return _wait_on_state(state_func, timeout=timeout)
+    return _wait_on_state(state_func, timeout=timeout, deadline=deadline)
 
 
-def _wait_on_state(state_func, polling_backoff=0, timeout=None):
+def _wait_on_state(state_func, polling_backoff=0, timeout=None, deadline=None):
     def get_state():
         response = state_func()
         if not isinstance(response, list):
@@ -1024,8 +1046,12 @@ def _wait_on_state(state_func, polling_backoff=0, timeout=None):
         return current_states.pop()
 
     timeout = timeout or 60 * 60 * 24
-    final_state = wait_on(get_state, "state", timeout, polling_backoff)
-    return final_state
+    polling_tracker = PollingTrackerImpl(polling_backoff, timeout=timeout, deadline=deadline)
+    while True:
+        state = get_state()
+        if state is not None:
+            return state
+        polling_tracker.sleep()
 
 
 __all__ = ("execute",)

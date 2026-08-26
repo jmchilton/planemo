@@ -61,7 +61,13 @@ class BaseEngine(Engine):
         return run_responses
 
     @abc.abstractmethod
-    def _run(self, runnables, job_path, output_collectors: Optional[List[Callable]] = None):
+    def _run(
+        self,
+        runnables,
+        job_path,
+        output_collectors: Optional[List[Callable]] = None,
+        test_timeout=None,
+    ):
         """Run a job using a compatible artifact (workflow or tool) wrapped as a runnable."""
 
     def _check_can_run(self, runnable):
@@ -154,7 +160,7 @@ class BaseEngine(Engine):
                 lambda run_response, test_case=test_case: test_case.structured_test_data(run_response)
             )
         try:
-            run_responses = self._run(runnables, job_paths, output_collectors)
+            run_responses = self._run(runnables, job_paths, output_collectors, test_timeout=test_timeout)
         finally:
             for tmp_path in tmp_paths:
                 os.remove(tmp_path)

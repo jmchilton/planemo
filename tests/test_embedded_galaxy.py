@@ -343,6 +343,47 @@ def test_embedded_test_reuses_one_application_for_inner_test_groups():
     assert engine._active_embedded_runnable_uris == set()
 
 
+def test_galaxy_test_results_remain_paired_with_mixed_case_types():
+    from planemo.engine.galaxy import EmbeddedGalaxyEngine
+    from planemo.engine.interface import BaseEngine
+    from planemo.runnable import ExternalGalaxyToolTestCase
+
+    config = object()
+    native_runnable = SimpleNamespace(uri="native")
+    native_case = ExternalGalaxyToolTestCase(native_runnable, "native", "1.0", 0, {})
+    expanded_case_one = ExternalGalaxyToolTestCase(native_runnable, "native", "1.0", 0, {})
+    expanded_case_two = ExternalGalaxyToolTestCase(native_runnable, "native", "1.0", 1, {})
+    workflow_case = SimpleNamespace(runnable=SimpleNamespace(uri="workflow"))
+    native_results = {
+        expanded_case_one: {"id": "native-0", "status": "success"},
+        expanded_case_two: {"id": "native-1", "status": "success"},
+    }
+    workflow_result = object()
+    engine = EmbeddedGalaxyEngine(_Context(), engine="embedded_galaxy")
+    engine._active_embedded_config = config
+    engine._active_embedded_runnable_uris = {"native"}
+
+    with (
+        patch.object(BaseEngine, "_run_test_cases", return_value=[workflow_result]),
+        patch(
+            "planemo.engine.galaxy.expand_test_cases",
+            return_value=[expanded_case_one, expanded_case_two],
+        ),
+        patch.object(
+            engine,
+            "_run_galaxy_tool_test_case",
+            side_effect=lambda config, case, timeout, register: register(native_results[case]),
+        ),
+    ):
+        results = engine._collect_test_results([native_case, workflow_case], test_timeout=30)
+
+    assert results == [
+        (expanded_case_one, native_results[expanded_case_one]),
+        (expanded_case_two, native_results[expanded_case_two]),
+        (workflow_case, workflow_result),
+    ]
+
+
 def test_embedded_test_rejects_unsupported_runnable_before_startup():
     from planemo.engine.galaxy import EmbeddedGalaxyEngine
 

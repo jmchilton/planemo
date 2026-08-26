@@ -4,8 +4,10 @@ Run with ``PLANEMO_TEST_EMBEDDED_GALAXY=1`` in an environment containing a
 Galaxy build with galaxyproject/galaxy#23360.
 """
 
+import contextlib
 import json
 import os
+import shutil
 import threading
 from dataclasses import replace
 from unittest.mock import patch
@@ -25,24 +27,66 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
         xml_tool_path = os.path.join(PROJECT_TEMPLATES_DIR, "demo", "cat.xml")
         yaml_tool_path = os.path.join(TEST_TOOLS_DIR, "embedded_echo.yml")
         workflow_path = os.path.join(TEST_DATA_DIR, "wf2.ga")
+        shed_workflow_source = os.path.join(
+            TEST_DATA_DIR,
+            "wf_repos",
+            "basic_wf_iwc_invalid_version",
+            "Super-simple-workflow.ga",
+        )
 
         from planemo.galaxy import embedded
 
         load_runtime_dependencies = embedded._load_runtime_dependencies
         construction_count = 0
+        celery_state_reads = []
+        celery_results = []
 
         def load_counted_runtime_dependencies():
             dependencies = load_runtime_dependencies()
             build_galaxy_web_app = dependencies.build_galaxy_web_app
+            start_worker = dependencies.start_worker
+
+            @dependencies.celery_app.task(name="planemo.embedded_result_backend_probe")
+            def result_backend_probe():
+                return "probe complete"
 
             def counted_build(*args, **kwds):
                 nonlocal construction_count
                 construction_count += 1
                 return build_galaxy_web_app(*args, **kwds)
 
-            return replace(dependencies, build_galaxy_web_app=counted_build)
+            @contextlib.contextmanager
+            def start_worker_with_result_backend_probe(celery_app, **kwds):
+                from celery.result import allow_join_result
+
+                with start_worker(celery_app, **kwds) as worker:
+                    result = result_backend_probe.delay()
+                    celery_state_reads.extend((result.state, result.state))
+                    with allow_join_result():
+                        celery_results.append(result.get(timeout=30))
+                    celery_state_reads.extend((result.state, result.state))
+                    yield worker
+
+            return replace(
+                dependencies,
+                build_galaxy_web_app=counted_build,
+                start_worker=start_worker_with_result_backend_probe,
+            )
 
         with self._isolate() as test_directory:
+            shed_workflow_path = os.path.join(test_directory, "embedded-shed-workflow.ga")
+            shutil.copyfile(shed_workflow_source, shed_workflow_path)
+            shed_tests_path = shed_workflow_path.replace(".ga", "-tests.yml")
+            with open(shed_tests_path, "w") as shed_tests:
+                shed_tests.write("""- doc: Exercise an installed Tool Shed workflow
+  job:
+    n_rows: 5
+  outputs:
+    outfile:
+      asserts:
+        has_n_lines:
+          n: 5
+""")
             report_path = os.path.join(test_directory, "embedded-report.json")
             with patch.object(embedded, "_load_runtime_dependencies", load_counted_runtime_dependencies):
                 result = self._check_exit_code(
@@ -56,6 +100,7 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
                         xml_tool_path,
                         yaml_tool_path,
                         workflow_path,
+                        shed_workflow_path,
                     ]
                 )
 
@@ -70,9 +115,12 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
             "num_errors": 0,
             "num_failures": 0,
             "num_skips": 0,
-            "num_tests": 3,
+            "num_tests": 4,
         }
         assert construction_count == 1
+        assert celery_results == ["probe complete"]
+        assert len(celery_state_reads) == 4
+        assert celery_state_reads[-2:] == ["SUCCESS", "SUCCESS"]
         assert all(test["data"]["status"] == "success" for test in report["tests"])
         tool_jobs = [test["data"]["job"] for test in report["tests"] if test["data"].get("job")]
         assert {job["tool_id"] for job in tool_jobs} == {"cat", "embedded_echo"}
@@ -80,9 +128,9 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
         # Pydantic's report model serializes optional fields as null, so select
         # by the authoritative runnable type rather than key presence.
         workflow_results = [test for test in report["tests"] if test["test_type"] == "galaxy_workflow"]
-        assert len(workflow_results) == 1
-        assert workflow_results[0]["data"]["invocation_details"]
-        assert workflow_results[0]["data"]["invocation_details"]["details"]["invocation_state"] in {
+        assert len(workflow_results) == 2
+        assert all(result["data"]["invocation_details"] for result in workflow_results)
+        assert {result["data"]["invocation_details"]["details"]["invocation_state"] for result in workflow_results} <= {
             "scheduled",
             "completed",
         }

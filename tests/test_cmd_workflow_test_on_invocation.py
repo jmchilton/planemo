@@ -12,6 +12,8 @@ from .test_utils import create_test_context
 
 
 def test_workflow_test_on_invocation_forwards_test_timeout():
+    assert "test_timeout" in {parameter.name for parameter in cli.params}
+
     ctx = create_test_context()
     ctx.exit = MagicMock()
     user_gi = MagicMock()

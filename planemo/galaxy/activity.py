@@ -127,7 +127,7 @@ class PlanemoStagingInterface(StagingInterface):
         version_major: str,
         simultaneous_uploads: bool,
         upload_progress_display: Optional["UploadProgressDisplay"] = None,
-        deadline=None,
+        deadline: Optional[float] = None,
     ) -> None:
         self._ctx = ctx
         self._user_gi = user_gi
@@ -189,7 +189,11 @@ class PlanemoStagingInterface(StagingInterface):
             check_ok: Whether to verify upload success
             display: Upload progress display instance
         """
-        polling_tracker = PollingTrackerImpl(polling_backoff=0, deadline=self._deadline)
+        polling_tracker = PollingTrackerImpl(
+            polling_backoff=0,
+            deadline=self._deadline,
+            timeout_message="Timed out waiting for Galaxy uploads.",
+        )
 
         while not display.upload_progress.terminal:
             # Aggregate current job states
@@ -264,10 +268,7 @@ def _execute(  # noqa C901
     ctx: "PlanemoCliContext", config: "BaseGalaxyConfig", runnable: Runnable, job_path: str, fail_fast=False, **kwds
 ) -> "GalaxyBaseRunResponse":
     test_timeout = kwds.get("test_timeout")
-    test_deadline = kwds.get("_test_deadline")
-    if test_deadline is None and test_timeout is not None:
-        test_deadline = time.monotonic() + test_timeout
-        kwds["_test_deadline"] = test_deadline
+    test_deadline = time.monotonic() + test_timeout if test_timeout is not None else None
 
     user_gi = config.user_gi
     admin_gi = config.gi
@@ -275,7 +276,7 @@ def _execute(  # noqa C901
 
     start_datetime = datetime.now()
     try:
-        job_dict, history_id = stage_in(ctx, runnable, config, job_path, **kwds)
+        job_dict, history_id = stage_in(ctx, runnable, config, job_path, deadline=test_deadline, **kwds)
     except Exception:
         ctx.vlog("Problem with staging in data for Galaxy activities...")
         raise
@@ -384,8 +385,8 @@ def invocation_to_run_response(
     start_datetime=None,
     log=None,
     fail_fast=False,
-    timeout=None,
-    deadline=None,
+    timeout: Optional[float] = None,
+    deadline: Optional[float] = None,
 ):
     start_datetime = start_datetime or datetime.now()
     invocation_id = invocation["id"]
@@ -432,7 +433,12 @@ def invocation_to_run_response(
 
 
 def stage_in(
-    ctx: "PlanemoCliContext", runnable: Runnable, config: "BaseGalaxyConfig", job_path: str, **kwds
+    ctx: "PlanemoCliContext",
+    runnable: Runnable,
+    config: "BaseGalaxyConfig",
+    job_path: str,
+    deadline: Optional[float] = None,
+    **kwds,
 ) -> Tuple[Dict[str, Any], str]:
     # only upload objects as files/collections for CWL workflows...
     tool_or_workflow = "tool" if runnable.type != RunnableType.cwl_workflow else "workflow"
@@ -456,7 +462,7 @@ def stage_in(
             config.version_major,
             simultaneous_uploads,
             upload_progress,
-            deadline=kwds.get("_test_deadline"),
+            deadline=deadline,
         )
         job_dict, datasets = psi.stage(
             tool_or_workflow,
@@ -969,10 +975,15 @@ def wait_for_invocation_and_jobs(
     user_gi: GalaxyInstance,
     polling_backoff: int,
     fail_fast: bool = False,
-    timeout=None,
-    deadline=None,
+    timeout: Optional[float] = None,
+    deadline: Optional[float] = None,
 ):
-    polling_tracker = PollingTrackerImpl(polling_backoff, timeout=timeout, deadline=deadline)
+    polling_tracker = PollingTrackerImpl(
+        polling_backoff,
+        timeout=timeout,
+        deadline=deadline,
+        timeout_message=f"Timed out waiting for Galaxy workflow invocation [{invocation_id}].",
+    )
     invocation_api = BioblendInvocationApi(ctx, user_gi)
     with WorkflowProgressDisplay(invocation_id, galaxy_url=user_gi.base_url) as workflow_progress_display:
         final_invocation_state, job_state, error_message = polling_wait_for_invocation_and_jobs(
@@ -1006,14 +1017,30 @@ def _wait_for_history(ctx, gi, history_id, polling_backoff=0):
     return _wait_on_state(state_func, polling_backoff)
 
 
-def _wait_for_job(gi, job_id, timeout=None, deadline=None):
+def _wait_for_job(
+    gi,
+    job_id,
+    timeout: Optional[float] = None,
+    deadline: Optional[float] = None,
+):
     def state_func():
         return gi.jobs.show_job(job_id, full_details=True)
 
-    return _wait_on_state(state_func, timeout=timeout, deadline=deadline)
+    return _wait_on_state(
+        state_func,
+        timeout=timeout,
+        deadline=deadline,
+        timeout_message=f"Timed out waiting for Galaxy job [{job_id}].",
+    )
 
 
-def _wait_on_state(state_func, polling_backoff=0, timeout=None, deadline=None):
+def _wait_on_state(
+    state_func,
+    polling_backoff=0,
+    timeout: Optional[float] = None,
+    deadline: Optional[float] = None,
+    timeout_message: str = "Timed out while polling Galaxy.",
+):
     def get_state():
         response = state_func()
         if not isinstance(response, list):
@@ -1045,8 +1072,14 @@ def _wait_on_state(state_func, polling_backoff=0, timeout=None, deadline=None):
         assert len(current_states) == 1, f"unexpected state(s) found: {current_states}"
         return current_states.pop()
 
-    timeout = timeout or 60 * 60 * 24
-    polling_tracker = PollingTrackerImpl(polling_backoff, timeout=timeout, deadline=deadline)
+    if timeout is None and deadline is None:
+        timeout = 60 * 60 * 24
+    polling_tracker = PollingTrackerImpl(
+        polling_backoff,
+        timeout=timeout,
+        deadline=deadline,
+        timeout_message=timeout_message,
+    )
     while True:
         state = get_state()
         if state is not None:

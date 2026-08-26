@@ -69,12 +69,14 @@ def test_execute_forwards_test_timeout_to_workflow_polling():
     }
     with (
         mock.patch("planemo.galaxy.activity.time.monotonic", return_value=100),
-        mock.patch("planemo.galaxy.activity.stage_in", return_value=({}, "historyid123")),
+        mock.patch("planemo.galaxy.activity.stage_in", return_value=({}, "historyid123")) as stage_in,
         mock.patch("planemo.galaxy.activity.invocation_to_run_response", side_effect=ExecutionHalted()) as convert,
         pytest.raises(ExecutionHalted),
     ):
         _execute(create_test_context(), config, WORKFLOW_RUNNABLE, job_path=None, test_timeout=17)
 
+    assert stage_in.call_args.kwargs["deadline"] == 117
+    assert "_test_deadline" not in stage_in.call_args.kwargs
     assert convert.call_args.kwargs["timeout"] == 17
     assert convert.call_args.kwargs["deadline"] == 117
 
@@ -116,7 +118,12 @@ def test_workflow_wait_uses_test_timeout():
             timeout=23,
         )
 
-    polling_tracker.assert_called_once_with(2, timeout=23, deadline=None)
+    polling_tracker.assert_called_once_with(
+        2,
+        timeout=23,
+        deadline=None,
+        timeout_message="Timed out waiting for Galaxy workflow invocation [invocationid123].",
+    )
 
 
 def test_base_engine_forwards_explicit_test_timeout_to_run():

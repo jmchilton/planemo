@@ -24,7 +24,7 @@ class CwlToolEngine(BaseEngine):
         runnables,
         job_paths,
         output_collectors: Optional[List[Callable]] = None,
-        test_timeout=None,
+        test_timeout: Optional[int] = None,
     ):
         """Run CWL job using cwltool."""
         results = []

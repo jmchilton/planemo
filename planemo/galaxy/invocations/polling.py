@@ -20,22 +20,31 @@ class PollingTracker(Protocol):
 
 
 class PollingTrackerImpl(PollingTracker):
-    def __init__(self, polling_backoff: int, timeout=None, deadline=None):
+    def __init__(
+        self,
+        polling_backoff: int,
+        timeout: Optional[float] = None,
+        deadline: Optional[float] = None,
+        timeout_message: str = "Timed out while polling Galaxy.",
+    ):
         self.polling_backoff = polling_backoff
         self.deadline = deadline
+        self.timeout_message = timeout_message
         if self.deadline is None and timeout is not None:
             self.deadline = time.monotonic() + timeout
         self.delta = 0.25
 
-    def sleep(self):
+    def sleep(self) -> None:
         sleep_for = self.delta
         if self.deadline is not None:
             remaining = self.deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError("Timed out while polling Galaxy.")
+                raise TimeoutError(self.timeout_message)
             if sleep_for >= remaining:
                 time.sleep(remaining)
-                raise TimeoutError("Timed out while polling Galaxy.")
+                # Give the caller one final poll at the deadline. If the work is
+                # still incomplete, its next sleep will raise immediately.
+                return
         time.sleep(sleep_for)
         self.delta += self.polling_backoff
 

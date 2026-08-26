@@ -66,7 +66,7 @@ class BaseEngine(Engine):
         runnables,
         job_path,
         output_collectors: Optional[List[Callable]] = None,
-        test_timeout=None,
+        test_timeout: Optional[int] = None,
     ):
         """Run a job using a compatible artifact (workflow or tool) wrapped as a runnable."""
 

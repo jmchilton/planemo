@@ -48,6 +48,23 @@ def test_polling_timeout_counts_elapsed_time_outside_sleep():
     sleep_mock.assert_not_called()
 
 
+def test_polling_timeout_allows_final_poll_at_deadline():
+    with (
+        patch("planemo.galaxy.invocations.polling.time.monotonic", side_effect=[10.0, 10.9, 11.0]),
+        patch("planemo.galaxy.invocations.polling.time.sleep") as sleep_mock,
+    ):
+        tracker = PollingTrackerImpl(
+            polling_backoff=0,
+            timeout=1,
+            timeout_message="Timed out waiting for test work.",
+        )
+        tracker.sleep()
+        with pytest.raises(TimeoutError, match="Timed out waiting for test work"):
+            tracker.sleep()
+
+    sleep_mock.assert_called_once_with(pytest.approx(0.1))
+
+
 class MockPollingTracker(PollingTracker):
     # The poll loop has no timeout, so cap ticks to fail fast instead of hanging the suite
     # if polling ever stops terminating.

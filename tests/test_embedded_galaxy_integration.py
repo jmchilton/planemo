@@ -24,7 +24,9 @@ from .test_utils import (
 
 class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
     @skip_unless_environ("PLANEMO_TEST_EMBEDDED_GALAXY")
-    def test_tools_upload_and_workflow_share_one_embedded_application(self):
+    def test_one_embedded_application_covers_full_acceptance_and_cleanup(self):
+        # Keep these cases in one command: Galaxy's process-global state means
+        # splitting the acceptance scenarios would stop enforcing one construction.
         xml_tool_path = os.path.join(PROJECT_TEMPLATES_DIR, "demo", "cat.xml")
         yaml_tool_path = os.path.join(TEST_TOOLS_DIR, "embedded_echo.yml")
         workflow_path = os.path.join(TEST_DATA_DIR, "wf2.ga")
@@ -36,6 +38,7 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
         )
 
         from planemo.galaxy import embedded
+        from planemo.io import live_runtime_resources
 
         load_runtime_dependencies = embedded._load_runtime_dependencies
         baseline_threads = set(threading.enumerate())
@@ -44,14 +47,23 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
         celery_state_reads = []
         celery_results = []
         config_directories = []
+        probe_started = threading.Event()
+        probe_can_finish = threading.Event()
 
         def load_counted_runtime_dependencies():
             dependencies = load_runtime_dependencies()
             build_galaxy_web_app = dependencies.build_galaxy_web_app
             start_worker = dependencies.start_worker
 
-            @dependencies.celery_app.task(name="planemo.embedded_result_backend_probe")
+            # Celery's registry is process-global and outlives this test. A
+            # test-local name prevents a later invocation reusing this closure.
+            probe_task_name = f"planemo.embedded_result_backend_probe_{id(probe_started)}"
+
+            @dependencies.celery_app.task(name=probe_task_name)
             def result_backend_probe():
+                probe_started.set()
+                if not probe_can_finish.wait(timeout=30):
+                    raise TimeoutError("Embedded result-backend probe was not released.")
                 return "probe complete"
 
             def counted_build(*args, **kwds):
@@ -66,7 +78,12 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
 
                 with start_worker(celery_app, **kwds) as worker:
                     result = result_backend_probe.delay()
-                    celery_state_reads.extend((result.state, result.state))
+                    if not probe_started.wait(timeout=30):
+                        raise TimeoutError("Embedded result-backend probe did not start.")
+                    try:
+                        celery_state_reads.extend((result.state, result.state))
+                    finally:
+                        probe_can_finish.set()
                     with allow_join_result():
                         celery_results.append(result.get(timeout=30))
                     celery_state_reads.extend((result.state, result.state))
@@ -79,6 +96,11 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
             )
 
         with self._isolate() as test_directory:
+            # The source is a workflow-lint fixture with an intentionally
+            # invalid tool version and a content-specific test. Keep this
+            # acceptance test focused on repairing/installing the Tool Shed
+            # dependency and executing it, without changing that fixture's
+            # separate contract.
             shed_workflow_path = os.path.join(test_directory, "embedded-shed-workflow.ga")
             shutil.copyfile(shed_workflow_source, shed_workflow_path)
             shed_tests_path = shed_workflow_path.replace(".ga", "-tests.yml")
@@ -125,6 +147,7 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
         assert construction_count == 1
         assert celery_results == ["probe complete"]
         assert len(celery_state_reads) == 4
+        assert all(state != "SUCCESS" for state in celery_state_reads[:2])
         assert celery_state_reads[-2:] == ["SUCCESS", "SUCCESS"]
         assert all(test["data"]["status"] == "success" for test in report["tests"])
         tool_jobs = [test["data"]["job"] for test in report["tests"] if test["data"].get("job")]
@@ -143,13 +166,9 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
         from galaxy import app as galaxy_app_module
 
         assert galaxy_app_module.app is None
-        remaining_threads = sorted(
-            thread.name for thread in threading.enumerate() if thread not in baseline_threads and thread.is_alive()
-        )
-        remaining_child_processes = sorted(
-            f"{process.name} (pid={process.pid})"
-            for process in multiprocessing.active_children()
-            if process.pid not in baseline_child_pids and process.is_alive()
+        remaining_threads, remaining_child_processes = live_runtime_resources(
+            exclude_threads=baseline_threads,
+            exclude_pids=baseline_child_pids,
         )
         assert remaining_threads == []
         assert remaining_child_processes == []

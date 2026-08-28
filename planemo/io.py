@@ -4,12 +4,14 @@ import contextlib
 import errno
 import fnmatch
 import math
+import multiprocessing
 import os
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from io import StringIO
 from sys import platform as _platform
@@ -62,6 +64,21 @@ def termination_timeout() -> float:
         warn(f"Ignoring invalid {TERMINATION_TIMEOUT_ENVIRON_KEY} [{configured}]")
         return DEFAULT_TERMINATION_TIMEOUT
     return timeout
+
+
+def live_runtime_resources(exclude_threads=(), exclude_pids=()):
+    """Return names of live threads and multiprocessing children not excluded."""
+    excluded_threads = set(exclude_threads)
+    excluded_pids = set(exclude_pids)
+    thread_names = sorted(
+        thread.name for thread in threading.enumerate() if thread not in excluded_threads and thread.is_alive()
+    )
+    process_names = sorted(
+        f"{process.name} (pid={process.pid})"
+        for process in multiprocessing.active_children()
+        if process.pid not in excluded_pids and process.is_alive()
+    )
+    return thread_names, process_names
 
 
 def args_to_str(args):

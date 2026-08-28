@@ -3,7 +3,6 @@
 import contextlib
 import copy
 import logging
-import multiprocessing
 import os
 import socket
 import threading
@@ -19,6 +18,7 @@ import click
 from planemo.config import OptionSource
 from planemo.galaxy.config import embedded_galaxy_config
 from planemo.galaxy.ephemeris_sleep import sleep
+from planemo.io import live_runtime_resources
 
 INSTALL_MESSAGE = (
     "No compatible Galaxy release is available yet; install Galaxy packages built from "
@@ -26,7 +26,11 @@ INSTALL_MESSAGE = (
 )
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 WORKER_QUEUES = ("galaxy.internal", "galaxy.external")
+UVICORN_SHUTDOWN_TIMEOUT = 10
+UVICORN_FORCE_EXIT_JOIN_TIMEOUT = 1
+FORK_POOL_JOIN_TIMEOUT = 5
 CLEANUP_DIAGNOSTIC_TIMEOUT = 30
+CLEANUP_DIAGNOSTIC_THREAD_JOIN_TIMEOUT = 1
 
 
 @dataclass(frozen=True)
@@ -259,7 +263,7 @@ def _start_uvicorn(dependencies, asgi_app, sock) -> _UvicornRuntime:
         port=port,
         access_log=False,
         log_config=None,
-        timeout_graceful_shutdown=10,
+        timeout_graceful_shutdown=UVICORN_SHUTDOWN_TIMEOUT,
     )
     server = dependencies.uvicorn_server(uvicorn_config)
     errors: list[BaseException] = []
@@ -278,10 +282,10 @@ def _start_uvicorn(dependencies, asgi_app, sock) -> _UvicornRuntime:
 def _stop_uvicorn(ctx, runtime: _UvicornRuntime):
     runtime.server.should_exit = True
     try:
-        runtime.thread.join(timeout=10)
+        runtime.thread.join(timeout=UVICORN_SHUTDOWN_TIMEOUT)
     except KeyboardInterrupt:
         runtime.server.force_exit = True
-        runtime.thread.join(timeout=1)
+        runtime.thread.join(timeout=UVICORN_FORCE_EXIT_JOIN_TIMEOUT)
     if runtime.thread.is_alive():
         ctx.vlog("Embedded Galaxy's uvicorn thread did not exit within 10 seconds.")
 
@@ -331,7 +335,7 @@ def _stop_fork_pool(celery_app):
     fork_pool = getattr(celery_app, "fork_pool", None)
     if fork_pool is not None:
         fork_pool.stop()
-        fork_pool.join(timeout=5)
+        fork_pool.join(timeout=FORK_POOL_JOIN_TIMEOUT)
 
 
 def _cleanup(ctx, description, operation):
@@ -343,14 +347,15 @@ def _cleanup(ctx, description, operation):
         ctx.vlog(f"Failed while {description}.", exception=exc)
 
 
+def _enter_cleanup_context(cleanup_stack, ctx, description, manager):
+    value = manager.__enter__()
+    cleanup_stack.callback(_cleanup, ctx, description, lambda: manager.__exit__(None, None, None))
+    return value
+
+
 def _report_slow_cleanup(ctx, timeout):
     current_thread = threading.current_thread()
-    thread_names = sorted(
-        thread.name for thread in threading.enumerate() if thread is not current_thread and thread.is_alive()
-    )
-    process_names = sorted(
-        f"{process.name} (pid={process.pid})" for process in multiprocessing.active_children() if process.is_alive()
-    )
+    thread_names, process_names = live_runtime_resources(exclude_threads=(current_thread,))
     active_threads = ", ".join(thread_names) or "none"
     active_processes = ", ".join(process_names) or "none"
     ctx.log(
@@ -371,7 +376,7 @@ def _cleanup_diagnostic_budget(ctx, timeout=CLEANUP_DIAGNOSTIC_TIMEOUT):
     finally:
         timer.cancel()
         with contextlib.suppress(KeyboardInterrupt):
-            timer.join(timeout=1)
+            timer.join(timeout=CLEANUP_DIAGNOSTIC_THREAD_JOIN_TIMEOUT)
 
 
 def _validate_application(dependencies, galaxy_app):
@@ -399,16 +404,31 @@ def serve_embedded(ctx, runnables=None, **kwds):
     kwds["host"] = bound_host
     kwds["port"] = bound_port
     cleanup_stack = contextlib.ExitStack()
-    cleanup_stack.callback(sock.close)
+    cleanup_stack.callback(_cleanup, ctx, "closing the embedded Galaxy socket", sock.close)
     dependencies = None
     web_app = None
     worker_runtime = None
     uvicorn_runtime = None
     previous_global_app = None
     try:
-        config = cleanup_stack.enter_context(embedded_galaxy_config(ctx, runnables, **kwds))
-        cleanup_stack.enter_context(_patched_environment(config.env))
-        cleanup_stack.enter_context(_embedded_logging(ctx, config.log_file))
+        config = _enter_cleanup_context(
+            cleanup_stack,
+            ctx,
+            "cleaning up the embedded Galaxy configuration",
+            embedded_galaxy_config(ctx, runnables, **kwds),
+        )
+        _enter_cleanup_context(
+            cleanup_stack,
+            ctx,
+            "restoring the embedded Galaxy environment",
+            _patched_environment(config.env),
+        )
+        _enter_cleanup_context(
+            cleanup_stack,
+            ctx,
+            "restoring embedded Galaxy logging",
+            _embedded_logging(ctx, config.log_file),
+        )
         dependencies = _load_runtime_dependencies()
         previous_global_app = dependencies.galaxy_app_module.app
         try:
@@ -461,7 +481,7 @@ def serve_embedded(ctx, runnables=None, **kwds):
                 _cleanup(ctx, "shutting down Galaxy", galaxy_app.shutdown)
                 if dependencies.galaxy_app_module.app is galaxy_app:
                     dependencies.galaxy_app_module.app = previous_global_app
-            _cleanup(ctx, "restoring embedded Galaxy state", cleanup_stack.close)
+            cleanup_stack.close()
 
 
 __all__ = (

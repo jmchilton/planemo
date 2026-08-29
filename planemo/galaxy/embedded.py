@@ -26,6 +26,7 @@ INSTALL_MESSAGE = (
 )
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 WORKER_QUEUES = ("galaxy.internal", "galaxy.external")
+CELERY_WORKER_SHUTDOWN_TIMEOUT = 10
 UVICORN_SHUTDOWN_TIMEOUT = 10
 UVICORN_FORCE_EXIT_JOIN_TIMEOUT = 1
 FORK_POOL_JOIN_TIMEOUT = 5
@@ -287,7 +288,7 @@ def _stop_uvicorn(ctx, runtime: _UvicornRuntime):
         runtime.server.force_exit = True
         runtime.thread.join(timeout=UVICORN_FORCE_EXIT_JOIN_TIMEOUT)
     if runtime.thread.is_alive():
-        ctx.vlog("Embedded Galaxy's uvicorn thread did not exit within 10 seconds.")
+        ctx.vlog(f"Embedded Galaxy's uvicorn thread did not exit within " f"{UVICORN_SHUTDOWN_TIMEOUT:g} seconds.")
 
 
 def _start_celery_worker(dependencies) -> _CeleryWorkerRuntime:
@@ -298,6 +299,7 @@ def _start_celery_worker(dependencies) -> _CeleryWorkerRuntime:
         "concurrency": 1,
         "queues": WORKER_QUEUES,
         "perform_ping_check": False,
+        "shutdown_timeout": CELERY_WORKER_SHUTDOWN_TIMEOUT,
     }
     if dependencies.worker_controller is not None:
         controller_class = dependencies.worker_controller
@@ -325,6 +327,11 @@ def _stop_celery_worker(runtime: _CeleryWorkerRuntime):
     if runtime.entered:
         try:
             runtime.context.__exit__(None, None, None)
+        except BaseException:
+            if runtime.controller is not None:
+                with contextlib.suppress(Exception):
+                    runtime.controller.terminate()
+            raise
         finally:
             runtime.entered = False
     elif runtime.controller is not None:
@@ -334,8 +341,10 @@ def _stop_celery_worker(runtime: _CeleryWorkerRuntime):
 def _stop_fork_pool(celery_app):
     fork_pool = getattr(celery_app, "fork_pool", None)
     if fork_pool is not None:
-        fork_pool.stop()
-        fork_pool.join(timeout=FORK_POOL_JOIN_TIMEOUT)
+        try:
+            fork_pool.stop()
+        finally:
+            fork_pool.join(timeout=FORK_POOL_JOIN_TIMEOUT)
 
 
 def _cleanup(ctx, description, operation):
@@ -367,16 +376,24 @@ def _report_slow_cleanup(ctx, timeout):
 @contextlib.contextmanager
 def _cleanup_diagnostic_budget(ctx, timeout=CLEANUP_DIAGNOSTIC_TIMEOUT):
     """Report live runtime resources if cooperative cleanup exceeds its budget."""
-    timer = threading.Timer(timeout, _report_slow_cleanup, args=(ctx, timeout))
-    timer.name = "planemo-embedded-cleanup-diagnostics"
-    timer.daemon = True
-    timer.start()
+    timer = None
+    timer_started = False
+    try:
+        timer = threading.Timer(timeout, _report_slow_cleanup, args=(ctx, timeout))
+        timer.name = "planemo-embedded-cleanup-diagnostics"
+        timer.daemon = True
+        timer.start()
+        timer_started = True
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            ctx.vlog("Failed to start embedded Galaxy cleanup diagnostics; continuing cleanup.", exception=exc)
     try:
         yield
     finally:
-        timer.cancel()
-        with contextlib.suppress(KeyboardInterrupt):
-            timer.join(timeout=CLEANUP_DIAGNOSTIC_THREAD_JOIN_TIMEOUT)
+        if timer_started:
+            timer.cancel()
+            with contextlib.suppress(KeyboardInterrupt):
+                timer.join(timeout=CLEANUP_DIAGNOSTIC_THREAD_JOIN_TIMEOUT)
 
 
 def _validate_application(dependencies, galaxy_app):

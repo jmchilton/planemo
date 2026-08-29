@@ -168,6 +168,7 @@ def test_embedded_lifecycle_orders_startup_and_cleanup(tmp_path):
         "concurrency": 1,
         "queues": ("galaxy.internal", "galaxy.external"),
         "perform_ping_check": False,
+        "shutdown_timeout": 10,
     }
     assert app_module.app is None
     assert os.environ.get("GALAXY_CONFIG_FILE") == old_config_file
@@ -258,6 +259,48 @@ def test_partial_worker_entry_terminates_the_captured_controller():
     assert events == ["controller created", "controller terminated"]
 
 
+def test_worker_exit_failure_terminates_the_captured_controller():
+    events = []
+
+    class FailingWorkerContext:
+        def __exit__(self, exc_type, exc, traceback):
+            events.append("worker exit")
+            raise RuntimeError("worker shutdown failed")
+
+    class Controller:
+        def terminate(self):
+            events.append("controller terminated")
+
+    runtime = embedded._CeleryWorkerRuntime(
+        context=FailingWorkerContext(),
+        controller=Controller(),
+        entered=True,
+    )
+
+    with pytest.raises(RuntimeError, match="worker shutdown failed"):
+        embedded._stop_celery_worker(runtime)
+
+    assert events == ["worker exit", "controller terminated"]
+    assert runtime.entered is False
+
+
+def test_fork_pool_join_is_attempted_after_stop_failure():
+    events = []
+
+    class FailingForkPool:
+        def stop(self):
+            events.append("pool stop")
+            raise RuntimeError("pool stop failed")
+
+        def join(self, timeout):
+            events.append(("pool join", timeout))
+
+    with pytest.raises(RuntimeError, match="pool stop failed"):
+        embedded._stop_fork_pool(SimpleNamespace(fork_pool=FailingForkPool()))
+
+    assert events == ["pool stop", ("pool join", embedded.FORK_POOL_JOIN_TIMEOUT)]
+
+
 def test_slow_cleanup_reports_live_runtime_resources():
     reported = threading.Event()
 
@@ -279,6 +322,26 @@ def test_slow_cleanup_reports_live_runtime_resources():
     assert not any(
         thread.name == "planemo-embedded-cleanup-diagnostics" and thread.is_alive() for thread in threading.enumerate()
     )
+
+
+def test_cleanup_continues_if_diagnostic_thread_cannot_start(monkeypatch):
+    events = []
+
+    class FailingTimer:
+        def __init__(self, *args, **kwds):
+            pass
+
+        def start(self):
+            raise RuntimeError("thread allocation failed")
+
+    monkeypatch.setattr(threading, "Timer", FailingTimer)
+    ctx = _Context()
+
+    with embedded._cleanup_diagnostic_budget(ctx):
+        events.append("cleanup ran")
+
+    assert events == ["cleanup ran"]
+    assert ctx.messages == ["Failed to start embedded Galaxy cleanup diagnostics; continuing cleanup."]
 
 
 @pytest.mark.parametrize(

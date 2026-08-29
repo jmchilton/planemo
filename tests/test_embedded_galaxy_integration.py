@@ -11,8 +11,6 @@ import os
 import shutil
 import signal
 import socket
-import subprocess
-import sys
 import threading
 from dataclasses import replace
 from unittest.mock import patch
@@ -22,49 +20,18 @@ import pytest
 
 from planemo import network_util
 from planemo.galaxy.ephemeris_sleep import sleep
-from planemo.io import (
-    process_group_exists,
-    terminate_process_group,
-)
+from planemo.io import process_group_exists
 from .test_utils import (
     CliTestCase,
+    planemo_subprocess,
     PROJECT_TEMPLATES_DIR,
     skip_unless_environ,
     TEST_DATA_DIR,
     TEST_TOOLS_DIR,
 )
 
-PLANEMO_CLI_ENTRYPOINT = "from planemo.cli import planemo; planemo()"
 SUBPROCESS_STARTUP_TIMEOUT = 120
 SUBPROCESS_EXIT_TIMEOUT = 45
-
-
-@contextlib.contextmanager
-def _planemo_subprocess(arguments, cwd, log_path):
-    environment = os.environ.copy()
-    executable_directory = os.path.dirname(sys.executable)
-    environment["PATH"] = os.pathsep.join((executable_directory, environment.get("PATH", "")))
-    with open(log_path, "w+") as log_fh:
-        process = subprocess.Popen(
-            [sys.executable, "-c", PLANEMO_CLI_ENTRYPOINT, *arguments],
-            cwd=cwd,
-            env=environment,
-            stdout=log_fh,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        try:
-            yield process, log_fh
-        finally:
-            log_fh.flush()
-            if process.poll() is None or process_group_exists(process.pid):
-                terminate_process_group(process.pid, timeout=5, reap=process.poll)
-
-
-def _subprocess_log(log_fh):
-    log_fh.flush()
-    log_fh.seek(0)
-    return log_fh.read()
 
 
 class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
@@ -256,9 +223,10 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
                 yaml_tool_path,
                 job_path,
             ]
-            with _planemo_subprocess(command, test_directory, process_log) as (process, log_fh):
+            with planemo_subprocess(command, test_directory, process_log) as managed_process:
+                process = managed_process.process
                 return_code = process.wait(timeout=SUBPROCESS_STARTUP_TIMEOUT)
-                process_output = _subprocess_log(log_fh)
+                process_output = managed_process.read_output()
                 assert return_code == 0, process_output
                 assert not process_group_exists(process.pid), process_output
 
@@ -286,14 +254,15 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
                 str(port),
                 yaml_tool_path,
             ]
-            with _planemo_subprocess(command, test_directory, process_log) as (process, log_fh):
+            with planemo_subprocess(command, test_directory, process_log) as managed_process:
+                process = managed_process.process
                 galaxy_url = f"http://127.0.0.1:{port}"
                 if not sleep(galaxy_url, timeout=SUBPROCESS_STARTUP_TIMEOUT):
-                    raise AssertionError(f"Embedded Galaxy did not become ready.\n{_subprocess_log(log_fh)}")
+                    raise AssertionError(f"Embedded Galaxy did not become ready.\n{managed_process.read_output()}")
 
                 process.send_signal(signal.SIGINT)
                 return_code = process.wait(timeout=SUBPROCESS_EXIT_TIMEOUT)
-                process_output = _subprocess_log(log_fh)
+                process_output = managed_process.read_output()
                 assert return_code == 1, process_output
                 assert "Aborted!" in process_output
                 assert not process_group_exists(process.pid), process_output

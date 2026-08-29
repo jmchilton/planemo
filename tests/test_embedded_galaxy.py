@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import threading
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -172,6 +173,125 @@ def test_embedded_lifecycle_orders_startup_and_cleanup(tmp_path):
     }
     assert app_module.app is None
     assert os.environ.get("GALAXY_CONFIG_FILE") == old_config_file
+
+
+def test_readiness_failure_preserves_error_and_completes_cleanup(tmp_path):
+    events = []
+    dependencies, config_context, uvicorn_runtime, app_module, _ = _lifecycle_fakes(tmp_path, events)
+
+    class FailingForkPool:
+        def stop(self):
+            events.append("pool stop")
+            raise RuntimeError("pool stop failed")
+
+        def join(self, timeout):
+            events.append(("pool join", timeout))
+
+    dependencies = replace(dependencies, celery_app=SimpleNamespace(fork_pool=FailingForkPool()))
+
+    with (
+        patch.object(embedded, "embedded_galaxy_config", config_context),
+        patch.object(embedded, "_load_runtime_dependencies", return_value=dependencies),
+        patch.object(embedded, "_start_uvicorn", return_value=uvicorn_runtime),
+        patch.object(embedded, "_stop_uvicorn", side_effect=lambda ctx, runtime: events.append("uvicorn stop")),
+        patch.object(embedded, "sleep", return_value=False),
+        pytest.raises(RuntimeError, match="failed to start") as raised,
+    ):
+        with embedded.serve_embedded(_Context(), [], galaxy_startup_timeout=0):
+            pytest.fail("unreachable")
+
+    assert raised.value.__cause__ is None
+    event_names = [event if isinstance(event, str) else event[0] for event in events]
+    assert event_names[-6:] == [
+        "uvicorn stop",
+        "worker exit",
+        "pool stop",
+        "pool join",
+        "app shutdown",
+        "config exit",
+    ]
+    assert app_module.app is None
+
+
+def test_uvicorn_startup_failure_is_retained_as_cause(tmp_path):
+    events = []
+    dependencies, config_context, uvicorn_runtime, app_module, _ = _lifecycle_fakes(tmp_path, events)
+    server_error = RuntimeError("uvicorn thread crashed")
+    uvicorn_runtime.errors.append(server_error)
+
+    with (
+        patch.object(embedded, "embedded_galaxy_config", config_context),
+        patch.object(embedded, "_load_runtime_dependencies", return_value=dependencies),
+        patch.object(embedded, "_start_uvicorn", return_value=uvicorn_runtime),
+        patch.object(embedded, "_stop_uvicorn", side_effect=lambda ctx, runtime: events.append("uvicorn stop")),
+        patch.object(embedded, "sleep", return_value=False),
+        pytest.raises(RuntimeError, match="uvicorn server failed") as raised,
+    ):
+        with embedded.serve_embedded(_Context(), []):
+            pytest.fail("unreachable")
+
+    assert raised.value.__cause__ is server_error
+    assert "app shutdown" in events
+    assert events[-1] == "config exit"
+    assert app_module.app is None
+
+
+def test_first_interrupt_propagates_after_complete_cleanup(tmp_path):
+    events = []
+    dependencies, config_context, uvicorn_runtime, app_module, _ = _lifecycle_fakes(tmp_path, events)
+    interrupt = KeyboardInterrupt("foreground interrupted")
+
+    with (
+        patch.object(embedded, "embedded_galaxy_config", config_context),
+        patch.object(embedded, "_load_runtime_dependencies", return_value=dependencies),
+        patch.object(embedded, "_start_uvicorn", return_value=uvicorn_runtime),
+        patch.object(embedded, "_stop_uvicorn", side_effect=lambda ctx, runtime: events.append("uvicorn stop")),
+        patch.object(embedded, "sleep", return_value=True),
+        pytest.raises(KeyboardInterrupt) as raised,
+    ):
+        with embedded.serve_embedded(_Context(), []):
+            raise interrupt
+
+    assert raised.value is interrupt
+    event_names = [event if isinstance(event, str) else event[0] for event in events]
+    assert event_names[-6:] == [
+        "uvicorn stop",
+        "worker exit",
+        "pool stop",
+        "pool join",
+        "app shutdown",
+        "config exit",
+    ]
+    assert app_module.app is None
+
+
+def test_second_interrupt_forces_uvicorn_exit():
+    class InterruptingJoin:
+        def __init__(self):
+            self.join_timeouts = []
+            self.alive = True
+
+        def join(self, timeout):
+            self.join_timeouts.append(timeout)
+            if len(self.join_timeouts) == 1:
+                raise KeyboardInterrupt()
+            self.alive = False
+
+        def is_alive(self):
+            return self.alive
+
+    server = SimpleNamespace(should_exit=False, force_exit=False)
+    thread = InterruptingJoin()
+    runtime = embedded._UvicornRuntime(server=server, thread=thread, errors=[])
+
+    embedded._stop_uvicorn(_Context(), runtime)
+
+    assert server.should_exit is True
+    assert server.force_exit is True
+    assert thread.join_timeouts == [
+        embedded.UVICORN_SHUTDOWN_TIMEOUT,
+        embedded.UVICORN_FORCE_EXIT_JOIN_TIMEOUT,
+    ]
 
 
 def test_application_validation_failure_still_shuts_down_app(tmp_path):

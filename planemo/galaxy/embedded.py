@@ -39,6 +39,7 @@ class _RuntimeDependencies:
     build_galaxy_web_app: Any
     galaxy_app_module: Any
     celery_app: Any
+    celery_worker_state: Any
     start_worker: Any
     worker_controller: Any
     uvicorn_config: Any
@@ -55,6 +56,7 @@ class _UvicornRuntime:
 @dataclass
 class _CeleryWorkerRuntime:
     context: Any
+    worker_state: Any = None
     controller: Any = None
     entered: bool = False
 
@@ -98,6 +100,7 @@ def _load_runtime_dependencies() -> _RuntimeDependencies:
             start_worker,
             TestWorkController,
         )
+        from celery.worker import state as celery_worker_state
         from galaxy import app as galaxy_app_module
         from galaxy.celery import celery_app
         from galaxy.webapps.galaxy.fast_factory import build_galaxy_web_app
@@ -112,6 +115,7 @@ def _load_runtime_dependencies() -> _RuntimeDependencies:
         build_galaxy_web_app=build_galaxy_web_app,
         galaxy_app_module=galaxy_app_module,
         celery_app=celery_app,
+        celery_worker_state=celery_worker_state,
         start_worker=start_worker,
         worker_controller=TestWorkController,
         uvicorn_config=UvicornConfig,
@@ -293,7 +297,7 @@ def _stop_uvicorn(ctx, runtime: _UvicornRuntime):
 
 def _start_celery_worker(dependencies) -> _CeleryWorkerRuntime:
     """Start Celery while retaining a controller for partial-entry cleanup."""
-    runtime = _CeleryWorkerRuntime(context=None)
+    runtime = _CeleryWorkerRuntime(context=None, worker_state=dependencies.celery_worker_state)
     worker_kwds = {
         "pool": "solo",
         "concurrency": 1,
@@ -316,11 +320,22 @@ def _start_celery_worker(dependencies) -> _CeleryWorkerRuntime:
         runtime.context.__enter__()
         runtime.entered = True
     except BaseException:
-        if runtime.controller is not None:
-            with contextlib.suppress(Exception):
-                runtime.controller.terminate()
+        with contextlib.suppress(Exception):
+            _terminate_celery_worker(runtime)
         raise
     return runtime
+
+
+def _terminate_celery_worker(runtime: _CeleryWorkerRuntime):
+    try:
+        if runtime.controller is not None:
+            runtime.controller.terminate()
+    finally:
+        # celery.contrib.testing.worker leaves this process-global flag set to
+        # integer 0 when its shutdown join times out. Celery treats 0 as a
+        # termination request by identity, poisoning the next in-process worker.
+        if runtime.worker_state is not None:
+            runtime.worker_state.should_terminate = None
 
 
 def _stop_celery_worker(runtime: _CeleryWorkerRuntime):
@@ -328,23 +343,29 @@ def _stop_celery_worker(runtime: _CeleryWorkerRuntime):
         try:
             runtime.context.__exit__(None, None, None)
         except BaseException:
-            if runtime.controller is not None:
-                with contextlib.suppress(Exception):
-                    runtime.controller.terminate()
+            with contextlib.suppress(Exception):
+                _terminate_celery_worker(runtime)
             raise
         finally:
             runtime.entered = False
     elif runtime.controller is not None:
-        runtime.controller.terminate()
+        _terminate_celery_worker(runtime)
 
 
 def _stop_fork_pool(celery_app):
     fork_pool = getattr(celery_app, "fork_pool", None)
     if fork_pool is not None:
-        try:
-            fork_pool.stop()
-        finally:
-            fork_pool.join(timeout=FORK_POOL_JOIN_TIMEOUT)
+        fork_pool.stop()
+
+
+def _join_fork_pool(celery_app):
+    fork_pool = getattr(celery_app, "fork_pool", None)
+    if fork_pool is not None:
+        # Pebble currently ignores this timeout for a stopped ProcessPool and
+        # performs unbounded internal joins. Keep passing the requested budget
+        # in case that behavior is fixed, but rely on the slow-cleanup
+        # diagnostic rather than claiming a hard bound here.
+        fork_pool.join(timeout=FORK_POOL_JOIN_TIMEOUT)
 
 
 def _cleanup(ctx, description, operation):
@@ -490,6 +511,11 @@ def serve_embedded(ctx, runnables=None, **kwds):
                     ctx,
                     "stopping Celery's fork pool",
                     lambda: _stop_fork_pool(dependencies.celery_app),
+                )
+                _cleanup(
+                    ctx,
+                    "joining Celery's fork pool",
+                    lambda: _join_fork_pool(dependencies.celery_app),
                 )
             if web_app is not None:
                 galaxy_app = web_app.galaxy_app

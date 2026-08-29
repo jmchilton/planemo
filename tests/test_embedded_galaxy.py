@@ -63,6 +63,7 @@ def _lifecycle_fakes(tmp_path, events, *, is_job_handler=True):
     app.shutdown = lambda: events.append("app shutdown")
     app_module = SimpleNamespace(app=None)
     celery_app = SimpleNamespace(fork_pool=_ForkPool(events))
+    celery_worker_state = SimpleNamespace(should_terminate=None)
 
     def build_galaxy_web_app(properties, global_conf, register_shutdown_at_exit):
         events.append(
@@ -85,6 +86,7 @@ def _lifecycle_fakes(tmp_path, events, *, is_job_handler=True):
         build_galaxy_web_app=build_galaxy_web_app,
         galaxy_app_module=app_module,
         celery_app=celery_app,
+        celery_worker_state=celery_worker_state,
         start_worker=start_worker,
         worker_controller=None,
         uvicorn_config=None,
@@ -329,6 +331,7 @@ def test_builder_failure_restores_the_previous_global_app(tmp_path):
         build_galaxy_web_app=fail_during_build,
         galaxy_app_module=dependencies.galaxy_app_module,
         celery_app=dependencies.celery_app,
+        celery_worker_state=dependencies.celery_worker_state,
         start_worker=dependencies.start_worker,
         worker_controller=dependencies.worker_controller,
         uvicorn_config=dependencies.uvicorn_config,
@@ -348,6 +351,7 @@ def test_builder_failure_restores_the_previous_global_app(tmp_path):
 
 def test_partial_worker_entry_terminates_the_captured_controller():
     events = []
+    worker_state = SimpleNamespace(should_terminate=None)
 
     class CapturableController:
         def __init__(self, *args, **kwds):
@@ -369,6 +373,7 @@ def test_partial_worker_entry_terminates_the_captured_controller():
 
     dependencies = SimpleNamespace(
         celery_app=object(),
+        celery_worker_state=worker_state,
         start_worker=start_worker,
         worker_controller=CapturableController,
     )
@@ -377,14 +382,17 @@ def test_partial_worker_entry_terminates_the_captured_controller():
         embedded._start_celery_worker(dependencies)
 
     assert events == ["controller created", "controller terminated"]
+    assert worker_state.should_terminate is None
 
 
 def test_worker_exit_failure_terminates_the_captured_controller():
     events = []
+    worker_state = SimpleNamespace(should_terminate=None)
 
     class FailingWorkerContext:
         def __exit__(self, exc_type, exc, traceback):
             events.append("worker exit")
+            worker_state.should_terminate = 0
             raise RuntimeError("worker shutdown failed")
 
     class Controller:
@@ -393,6 +401,7 @@ def test_worker_exit_failure_terminates_the_captured_controller():
 
     runtime = embedded._CeleryWorkerRuntime(
         context=FailingWorkerContext(),
+        worker_state=worker_state,
         controller=Controller(),
         entered=True,
     )
@@ -402,9 +411,10 @@ def test_worker_exit_failure_terminates_the_captured_controller():
 
     assert events == ["worker exit", "controller terminated"]
     assert runtime.entered is False
+    assert worker_state.should_terminate is None
 
 
-def test_fork_pool_join_is_attempted_after_stop_failure():
+def test_fork_pool_stop_and_join_failures_are_reported_independently():
     events = []
 
     class FailingForkPool:
@@ -414,11 +424,15 @@ def test_fork_pool_join_is_attempted_after_stop_failure():
 
         def join(self, timeout):
             events.append(("pool join", timeout))
+            raise RuntimeError("pool join failed")
 
-    with pytest.raises(RuntimeError, match="pool stop failed"):
-        embedded._stop_fork_pool(SimpleNamespace(fork_pool=FailingForkPool()))
+    celery_app = SimpleNamespace(fork_pool=FailingForkPool())
+    ctx = _Context()
+    embedded._cleanup(ctx, "stopping the pool", lambda: embedded._stop_fork_pool(celery_app))
+    embedded._cleanup(ctx, "joining the pool", lambda: embedded._join_fork_pool(celery_app))
 
     assert events == ["pool stop", ("pool join", embedded.FORK_POOL_JOIN_TIMEOUT)]
+    assert ctx.messages == ["Failed while stopping the pool.", "Failed while joining the pool."]
 
 
 def test_slow_cleanup_reports_live_runtime_resources():

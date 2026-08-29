@@ -9,10 +9,23 @@ import json
 import multiprocessing
 import os
 import shutil
+import signal
+import socket
+import subprocess
+import sys
 import threading
 from dataclasses import replace
 from unittest.mock import patch
 
+import psutil
+import pytest
+
+from planemo import network_util
+from planemo.galaxy.ephemeris_sleep import sleep
+from planemo.io import (
+    process_group_exists,
+    terminate_process_group,
+)
 from .test_utils import (
     CliTestCase,
     PROJECT_TEMPLATES_DIR,
@@ -20,6 +33,38 @@ from .test_utils import (
     TEST_DATA_DIR,
     TEST_TOOLS_DIR,
 )
+
+PLANEMO_CLI_ENTRYPOINT = "from planemo.cli import planemo; planemo()"
+SUBPROCESS_STARTUP_TIMEOUT = 120
+SUBPROCESS_EXIT_TIMEOUT = 45
+
+
+@contextlib.contextmanager
+def _planemo_subprocess(arguments, cwd, log_path):
+    environment = os.environ.copy()
+    executable_directory = os.path.dirname(sys.executable)
+    environment["PATH"] = os.pathsep.join((executable_directory, environment.get("PATH", "")))
+    with open(log_path, "w+") as log_fh:
+        process = subprocess.Popen(
+            [sys.executable, "-c", PLANEMO_CLI_ENTRYPOINT, *arguments],
+            cwd=cwd,
+            env=environment,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            yield process, log_fh
+        finally:
+            log_fh.flush()
+            if process.poll() is None or process_group_exists(process.pid):
+                terminate_process_group(process.pid, timeout=5, reap=process.poll)
+
+
+def _subprocess_log(log_fh):
+    log_fh.flush()
+    log_fh.seek(0)
+    return log_fh.read()
 
 
 class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
@@ -49,6 +94,7 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
         config_directories = []
         probe_started = threading.Event()
         probe_can_finish = threading.Event()
+        registered_probe_tasks = []
 
         def load_counted_runtime_dependencies():
             dependencies = load_runtime_dependencies()
@@ -65,6 +111,8 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
                 if not probe_can_finish.wait(timeout=30):
                     raise TimeoutError("Embedded result-backend probe was not released.")
                 return "probe complete"
+
+            registered_probe_tasks.append((dependencies.celery_app, result_backend_probe.name))
 
             def counted_build(*args, **kwds):
                 nonlocal construction_count
@@ -115,21 +163,25 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
           n: 5
 """)
             report_path = os.path.join(test_directory, "embedded-report.json")
-            with patch.object(embedded, "_load_runtime_dependencies", load_counted_runtime_dependencies):
-                result = self._check_exit_code(
-                    [
-                        "test",
-                        "--engine",
-                        "embedded_galaxy",
-                        "--no_dependency_resolution",
-                        "--test_output_json",
-                        report_path,
-                        xml_tool_path,
-                        yaml_tool_path,
-                        workflow_path,
-                        shed_workflow_path,
-                    ]
-                )
+            try:
+                with patch.object(embedded, "_load_runtime_dependencies", load_counted_runtime_dependencies):
+                    result = self._check_exit_code(
+                        [
+                            "test",
+                            "--engine",
+                            "embedded_galaxy",
+                            "--no_dependency_resolution",
+                            "--test_output_json",
+                            report_path,
+                            xml_tool_path,
+                            yaml_tool_path,
+                            workflow_path,
+                            shed_workflow_path,
+                        ]
+                    )
+            finally:
+                for celery_app, task_name in registered_probe_tasks:
+                    celery_app.tasks.unregister(task_name)
 
             with open(report_path) as report_fh:
                 report = json.load(report_fh)
@@ -149,10 +201,14 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
         assert len(celery_state_reads) == 4
         assert all(state != "SUCCESS" for state in celery_state_reads[:2])
         assert celery_state_reads[-2:] == ["SUCCESS", "SUCCESS"]
+        assert all(task_name not in celery_app.tasks for celery_app, task_name in registered_probe_tasks)
         assert all(test["data"]["status"] == "success" for test in report["tests"])
         tool_jobs = [test["data"]["job"] for test in report["tests"] if test["data"].get("job")]
         assert {job["tool_id"] for job in tool_jobs} == {"cat", "embedded_echo"}
         assert all(job["state"] == "ok" for job in tool_jobs)
+        tool_job_pids = [int(job["external_id"]) for job in tool_jobs]
+        assert len(tool_job_pids) == len(tool_jobs)
+        assert not any(psutil.pid_exists(pid) for pid in tool_job_pids)
         # Pydantic's report model serializes optional fields as null, so select
         # by the authoritative runnable type rather than key presence.
         workflow_results = [test for test in report["tests"] if test["test_type"] == "galaxy_workflow"]
@@ -174,3 +230,72 @@ class EmbeddedGalaxyIntegrationTestCase(CliTestCase):
         assert remaining_child_processes == []
         assert len(config_directories) == 1
         assert not os.path.exists(config_directories[0])
+
+    @skip_unless_environ("PLANEMO_TEST_EMBEDDED_GALAXY")
+    def test_run_uses_a_fresh_embedded_galaxy_process(self):
+        yaml_tool_path = os.path.join(TEST_TOOLS_DIR, "embedded_echo.yml")
+
+        with self._isolate() as test_directory:
+            job_path = os.path.join(test_directory, "embedded-job.json")
+            output_directory = os.path.join(test_directory, "outputs")
+            output_json = os.path.join(test_directory, "run-outputs.json")
+            process_log = os.path.join(test_directory, "planemo-run.log")
+            with open(job_path, "w") as job_fh:
+                json.dump({"message": "hello from planemo run"}, job_fh)
+
+            command = [
+                "run",
+                "--engine",
+                "embedded_galaxy",
+                "--no_dependency_resolution",
+                "--download_outputs",
+                "--output_directory",
+                output_directory,
+                "--output_json",
+                output_json,
+                yaml_tool_path,
+                job_path,
+            ]
+            with _planemo_subprocess(command, test_directory, process_log) as (process, log_fh):
+                return_code = process.wait(timeout=SUBPROCESS_STARTUP_TIMEOUT)
+                process_output = _subprocess_log(log_fh)
+                assert return_code == 0, process_output
+                assert not process_group_exists(process.pid), process_output
+
+            with open(output_json) as output_fh:
+                run_outputs = json.load(output_fh)
+            assert "output" in run_outputs
+            output_files = [path for path in os.scandir(output_directory) if path.is_file()]
+            assert len(output_files) == 1
+            with open(output_files[0].path) as output_fh:
+                assert output_fh.read().strip() == "hello from planemo run"
+
+    @skip_unless_environ("PLANEMO_TEST_EMBEDDED_GALAXY")
+    def test_foreground_serve_exits_cleanly_on_sigint(self):
+        yaml_tool_path = os.path.join(TEST_TOOLS_DIR, "embedded_echo.yml")
+
+        with self._isolate() as test_directory:
+            port = network_util.get_free_port()
+            process_log = os.path.join(test_directory, "planemo-serve.log")
+            command = [
+                "serve",
+                "--engine",
+                "embedded_galaxy",
+                "--no_dependency_resolution",
+                "--port",
+                str(port),
+                yaml_tool_path,
+            ]
+            with _planemo_subprocess(command, test_directory, process_log) as (process, log_fh):
+                galaxy_url = f"http://127.0.0.1:{port}"
+                if not sleep(galaxy_url, timeout=SUBPROCESS_STARTUP_TIMEOUT):
+                    raise AssertionError(f"Embedded Galaxy did not become ready.\n{_subprocess_log(log_fh)}")
+
+                process.send_signal(signal.SIGINT)
+                return_code = process.wait(timeout=SUBPROCESS_EXIT_TIMEOUT)
+                process_output = _subprocess_log(log_fh)
+                assert return_code == 1, process_output
+                assert "Aborted!" in process_output
+                assert not process_group_exists(process.pid), process_output
+                with pytest.raises(OSError):
+                    socket.create_connection(("127.0.0.1", port), timeout=1)

@@ -3,6 +3,7 @@
 import contextlib
 import json
 import os
+import shutil
 
 import yaml
 
@@ -14,6 +15,7 @@ from planemo.galaxy.config import (
     galaxy_config,
     get_refgenie_config,
     local_galaxy_config,
+    SERVICE_LOG_TAIL_LINES,
     tail_log_directory,
     write_galaxy_config,
 )
@@ -252,6 +254,29 @@ def test_embedded_test_configuration_uses_explicit_empty_plugin_directories(tmp_
         assert properties["tour_config_dir"] == str(config_directory / "empty")
         assert properties["visualization_plugins_directory"] == str(config_directory / "empty")
         assert properties["interactive_environment_plugins_directory"] == str(config_directory / "empty")
+
+
+def test_embedded_no_cleanup_preserves_config_and_bounded_log_tail():
+    ctx = create_test_context()
+    config = None
+    config_directory = None
+    lines = [f"embedded log line {index}" for index in range(SERVICE_LOG_TAIL_LINES + 5)]
+
+    try:
+        with embedded_galaxy_config(ctx, [], no_cleanup=True) as config:
+            config_directory = config.config_directory
+            with open(config.log_file, "w") as log_fh:
+                log_fh.write("\n".join(lines) + "\n")
+
+            service_logs = config.service_log_contents
+            assert list(service_logs) == ["embedded.log"]
+            assert service_logs["embedded.log"].splitlines() == lines[-SERVICE_LOG_TAIL_LINES:]
+
+        assert os.path.isdir(config_directory)
+        assert config.log_contents.splitlines() == lines
+    finally:
+        if config_directory:
+            shutil.rmtree(config_directory, ignore_errors=True)
 
 
 def test_shared_config_refactor_preserves_checkout_runtime(tmp_path):

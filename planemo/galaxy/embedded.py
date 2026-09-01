@@ -190,6 +190,7 @@ def _patched_environment(values: Dict[str, str]):
             if old_value is missing:
                 os.environ.pop(key, None)
             else:
+                assert isinstance(old_value, str)
                 os.environ[key] = old_value
 
 
@@ -308,11 +309,15 @@ def _start_celery_worker(dependencies) -> _CeleryWorkerRuntime:
     if dependencies.worker_controller is not None:
         controller_class = dependencies.worker_controller
 
-        class PlanemoWorkerController(controller_class):
-            def __init__(self, *args, **kwds):
-                super().__init__(*args, **kwds)
-                runtime.controller = self
+        def initialize_controller(self, *args, **kwds):
+            controller_class.__init__(self, *args, **kwds)
+            runtime.controller = self
 
+        PlanemoWorkerController = type(
+            "PlanemoWorkerController",
+            (controller_class,),
+            {"__init__": initialize_controller},
+        )
         worker_kwds["WorkController"] = PlanemoWorkerController
 
     runtime.context = dependencies.start_worker(dependencies.celery_app, **worker_kwds)

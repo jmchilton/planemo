@@ -229,9 +229,11 @@ class LocalManagedGalaxyEngine(GalaxyEngine):
 
 
 class SingularityDBMixin:
+    _kwds: Dict[str, Any]
+
     def run(self, runnables, job_paths, output_collectors: Optional[List[Callable]] = None):
         with SingularityPostgresDatabaseSource(**self._kwds.copy()):
-            run_responses = super().run(runnables, job_paths, output_collectors)
+            run_responses = getattr(super(), "run")(runnables, job_paths, output_collectors)
         return run_responses
 
 

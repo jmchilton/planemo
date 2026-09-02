@@ -279,6 +279,18 @@ def test_embedded_no_cleanup_preserves_config_and_bounded_log_tail():
             shutil.rmtree(config_directory, ignore_errors=True)
 
 
+def test_embedded_config_removes_its_generated_directory():
+    ctx = create_test_context()
+    config_directory = None
+
+    with embedded_galaxy_config(ctx, []) as config:
+        config_directory = config.config_directory
+        assert os.path.isdir(config_directory)
+
+    assert config_directory is not None
+    assert not os.path.exists(config_directory)
+
+
 def test_shared_config_refactor_preserves_checkout_runtime(tmp_path):
     galaxy_root = tmp_path / "galaxy"
     galaxy_package = galaxy_root / "lib" / "galaxy"

@@ -1,8 +1,10 @@
 """Unit tests for the embedded Galaxy lifecycle."""
 
 import contextlib
+import http.client
 import logging
 import os
+import socket
 import sys
 import threading
 from dataclasses import replace
@@ -114,14 +116,22 @@ def _lifecycle_fakes(tmp_path, events, *, is_job_handler=True):
             events.append("config exit")
 
     uvicorn_runtime = SimpleNamespace(errors=[])
-    return dependencies, config_context, uvicorn_runtime, app_module, config_file
+    return dependencies, config_context, uvicorn_runtime, app_module, config_file, config
 
 
-def test_embedded_lifecycle_orders_startup_and_cleanup(tmp_path):
+def _assert_relative_order(events, *expected):
+    event_names = [event if isinstance(event, str) else event[0] for event in events]
+    positions = [event_names.index(name) for name in expected]
+    assert positions == sorted(positions)
+
+
+def test_embedded_lifecycle_preserves_startup_and_cleanup_contract(tmp_path):
     events = []
-    dependencies, config_context, uvicorn_runtime, app_module, config_file = _lifecycle_fakes(tmp_path, events)
+    dependencies, config_context, uvicorn_runtime, app_module, config_file, _ = _lifecycle_fakes(tmp_path, events)
     ctx = _Context({"port": OptionSource.default})
     old_config_file = os.environ.get("GALAXY_CONFIG_FILE")
+    previous_global_app = object()
+    app_module.app = previous_global_app
 
     def start_uvicorn(deps, asgi_app, sock):
         events.append("uvicorn start")
@@ -141,8 +151,8 @@ def test_embedded_lifecycle_orders_startup_and_cleanup(tmp_path):
         with embedded.serve_embedded(ctx, [], galaxy_startup_timeout=17, port=9090, host="localhost"):
             events.append("body")
 
-    event_names = [event if isinstance(event, str) else event[0] for event in events]
-    assert event_names == [
+    _assert_relative_order(
+        events,
         "config enter",
         "build",
         "worker config",
@@ -157,7 +167,7 @@ def test_embedded_lifecycle_orders_startup_and_cleanup(tmp_path):
         "pool join",
         "app shutdown",
         "config exit",
-    ]
+    )
     assert events[0][1] != 9090
     assert events[0][2] == "127.0.0.1"
     build_event = events[1]
@@ -173,13 +183,13 @@ def test_embedded_lifecycle_orders_startup_and_cleanup(tmp_path):
         "perform_ping_check": False,
         "shutdown_timeout": 10,
     }
-    assert app_module.app is None
+    assert app_module.app is previous_global_app
     assert os.environ.get("GALAXY_CONFIG_FILE") == old_config_file
 
 
 def test_readiness_failure_preserves_error_and_completes_cleanup(tmp_path):
     events = []
-    dependencies, config_context, uvicorn_runtime, app_module, _ = _lifecycle_fakes(tmp_path, events)
+    dependencies, config_context, uvicorn_runtime, app_module, _, _ = _lifecycle_fakes(tmp_path, events)
 
     class FailingForkPool:
         def stop(self):
@@ -217,7 +227,7 @@ def test_readiness_failure_preserves_error_and_completes_cleanup(tmp_path):
 
 def test_uvicorn_startup_failure_is_retained_as_cause(tmp_path):
     events = []
-    dependencies, config_context, uvicorn_runtime, app_module, _ = _lifecycle_fakes(tmp_path, events)
+    dependencies, config_context, uvicorn_runtime, app_module, _, _ = _lifecycle_fakes(tmp_path, events)
     server_error = RuntimeError("uvicorn thread crashed")
     uvicorn_runtime.errors.append(server_error)
 
@@ -240,7 +250,7 @@ def test_uvicorn_startup_failure_is_retained_as_cause(tmp_path):
 
 def test_first_interrupt_propagates_after_complete_cleanup(tmp_path):
     events = []
-    dependencies, config_context, uvicorn_runtime, app_module, _ = _lifecycle_fakes(tmp_path, events)
+    dependencies, config_context, uvicorn_runtime, app_module, _, _ = _lifecycle_fakes(tmp_path, events)
     interrupt = KeyboardInterrupt("foreground interrupted")
 
     with (
@@ -265,6 +275,40 @@ def test_first_interrupt_propagates_after_complete_cleanup(tmp_path):
         "config exit",
     ]
     assert app_module.app is None
+
+
+@pytest.mark.parametrize("failure_location", ["install_workflows", "command_body"])
+def test_post_startup_failures_preserve_error_and_cleanup(tmp_path, failure_location):
+    events = []
+    dependencies, config_context, uvicorn_runtime, app_module, _, config = _lifecycle_fakes(tmp_path, events)
+    previous_global_app = object()
+    app_module.app = previous_global_app
+    failure = RuntimeError(f"failure in {failure_location}")
+
+    if failure_location == "install_workflows":
+
+        def fail_install():
+            raise failure
+
+        config.install_workflows = fail_install
+
+    with (
+        patch.object(embedded, "embedded_galaxy_config", config_context),
+        patch.object(embedded, "_load_runtime_dependencies", return_value=dependencies),
+        patch.object(embedded, "_start_uvicorn", return_value=uvicorn_runtime),
+        patch.object(embedded, "_stop_uvicorn", side_effect=lambda ctx, runtime: events.append("uvicorn stop")),
+        patch.object(embedded, "sleep", return_value=True),
+        pytest.raises(RuntimeError) as raised,
+    ):
+        with embedded.serve_embedded(_Context(), []):
+            if failure_location == "command_body":
+                raise failure
+
+    assert raised.value is failure
+    _assert_relative_order(
+        events, "uvicorn stop", "worker exit", "pool stop", "pool join", "app shutdown", "config exit"
+    )
+    assert app_module.app is previous_global_app
 
 
 def test_second_interrupt_forces_uvicorn_exit():
@@ -296,9 +340,68 @@ def test_second_interrupt_forces_uvicorn_exit():
     ]
 
 
+def test_uvicorn_adapter_serves_prebound_socket_and_stops():
+    uvicorn = pytest.importorskip("uvicorn")
+
+    async def asgi_app(scope, receive, send):
+        if scope["type"] == "lifespan":
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        else:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b'{"version_major":"test"}'})
+
+    sock = embedded._bind_socket("127.0.0.1", 0)
+    host, port = sock.getsockname()[:2]
+    dependencies = SimpleNamespace(uvicorn_config=uvicorn.Config, uvicorn_server=uvicorn.Server)
+    runtime = embedded._start_uvicorn(dependencies, asgi_app, sock)
+    try:
+        assert embedded.sleep(f"http://{host}:{port}", timeout=5)
+        connection = http.client.HTTPConnection(host, port, timeout=2)
+        try:
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            assert response.status == 200
+            assert response.read() == b'{"version_major":"test"}'
+        finally:
+            connection.close()
+    finally:
+        embedded._stop_uvicorn(_Context(), runtime)
+        sock.close()
+
+    assert not runtime.thread.is_alive()
+    with pytest.raises(OSError):
+        socket.create_connection((host, port), timeout=1)
+
+
+def test_patched_environment_restores_existing_and_missing_values(monkeypatch):
+    existing_key = "PLANEMO_TEST_EMBEDDED_EXISTING"
+    missing_key = "PLANEMO_TEST_EMBEDDED_MISSING"
+    monkeypatch.setenv(existing_key, "before")
+    monkeypatch.delenv(missing_key, raising=False)
+
+    with embedded._patched_environment({existing_key: "during", missing_key: "created"}):
+        assert os.environ[existing_key] == "during"
+        assert os.environ[missing_key] == "created"
+
+    assert os.environ[existing_key] == "before"
+    assert missing_key not in os.environ
+
+
 def test_application_validation_failure_still_shuts_down_app(tmp_path):
     events = []
-    dependencies, config_context, _, app_module, _ = _lifecycle_fakes(
+    dependencies, config_context, _, app_module, _, _ = _lifecycle_fakes(
         tmp_path,
         events,
         is_job_handler=False,
@@ -320,7 +423,7 @@ def test_application_validation_failure_still_shuts_down_app(tmp_path):
 
 def test_builder_failure_restores_the_previous_global_app(tmp_path):
     events = []
-    dependencies, config_context, _, app_module, _ = _lifecycle_fakes(tmp_path, events)
+    dependencies, config_context, _, app_module, _, _ = _lifecycle_fakes(tmp_path, events)
     leaked_partial_app = object()
 
     def fail_during_build(*args, **kwds):

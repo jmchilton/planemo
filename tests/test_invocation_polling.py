@@ -4,6 +4,8 @@ from typing import (
     Optional,
 )
 
+import pytest
+
 from planemo.galaxy.invocations.api import Invocation as InvocationResponse
 from planemo.galaxy.invocations.api import (
     InvocationApi,
@@ -12,6 +14,7 @@ from planemo.galaxy.invocations.api import (
 )
 from planemo.galaxy.invocations.polling import (
     PollingTracker,
+    PollingTrackerImpl,
     wait_for_invocation_and_jobs,
 )
 from planemo.galaxy.invocations.progress import WorkflowProgressDisplay
@@ -30,6 +33,21 @@ from .test_workflow_simulation import (
 )
 
 SLEEP = 0
+
+
+def test_polling_timeout_allows_final_poll_at_deadline():
+    tracker = PollingTrackerImpl(
+        polling_backoff=0,
+        timeout=0.1,
+        timeout_message="Timed out waiting for test work.",
+    )
+
+    # Reaching the deadline returns control for one final state check. A caller
+    # that still needs to poll after that receives the timeout.
+    tracker.sleep()
+    sleep(0.01)
+    with pytest.raises(TimeoutError, match="Timed out waiting for test work"):
+        tracker.sleep()
 
 
 class MockPollingTracker(PollingTracker):

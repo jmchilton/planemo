@@ -57,7 +57,7 @@ def _run_engine_filter(test_cases, kwds):
         def _check_can_run_all(self, runnables):
             """No-op: allow any runnable type in tests."""
 
-        def _run(self, runnables, job_paths, output_collectors=None):
+        def _run(self, runnables, job_paths, output_collectors=None, test_timeout=None):
             return []
 
         def _collect_test_results(self, cases, test_timeout):

@@ -70,7 +70,9 @@ def run_engine_option():
     """Annotate click command as consume the --engine option."""
     return planemo_option(
         "--engine",
-        type=click.Choice(["galaxy", "embedded_galaxy", "docker_galaxy", "cwltool", "toil", "external_galaxy"]),
+        type=click.Choice(
+            ["galaxy", "installed_galaxy", "embedded_galaxy", "docker_galaxy", "cwltool", "toil", "external_galaxy"]
+        ),
         default=None,
         use_global_config=True,
         help=(
@@ -100,7 +102,7 @@ def serve_engine_option():
     """
     return planemo_option(
         "--engine",
-        type=click.Choice(["galaxy", "embedded_galaxy", "docker_galaxy", "external_galaxy"]),
+        type=click.Choice(["galaxy", "installed_galaxy", "embedded_galaxy", "docker_galaxy", "external_galaxy"]),
         default="galaxy",
         use_global_config=True,
         use_env_var=True,

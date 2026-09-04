@@ -4,6 +4,7 @@ import contextlib
 import json
 import os
 import shutil
+import sys
 
 import yaml
 
@@ -14,6 +15,7 @@ from planemo.galaxy.config import (
     embedded_galaxy_config,
     galaxy_config,
     get_refgenie_config,
+    installed_galaxy_config,
     local_galaxy_config,
     SERVICE_LOG_TAIL_LINES,
     tail_log_directory,
@@ -236,6 +238,84 @@ def test_embedded_galaxy_config_is_checkout_independent(tmp_path):
         with open(properties["job_config_file"]) as job_config_fh:
             job_config = yaml.safe_load(job_config_fh)
         assert "handling" not in job_config
+
+
+def test_installed_galaxy_config_uses_gravity_and_cross_process_celery(tmp_path):
+    config_directory = tmp_path / "config"
+    config_directory.mkdir()
+
+    with installed_galaxy_config(
+        create_test_context(),
+        [],
+        config_directory=str(config_directory),
+        host="127.0.0.1",
+        port=8765,
+    ) as config:
+        with open(config.galaxy_config_file) as config_fh:
+            config_data = yaml.safe_load(config_fh)
+
+        properties = config_data["galaxy"]
+        gravity = config_data["gravity"]
+        assert properties["bootstrap_admin_api_key"] == config.master_api_key
+        assert "master_api_key" not in properties
+        assert properties["data_dir"] == str(config_directory / "data")
+        assert properties["amqp_internal_connection"] == (
+            f"sqlalchemy+sqlite:///{config_directory / 'celery_broker.sqlite'}"
+        )
+        assert properties["enable_celery_tasks"] is True
+        assert properties["interactivetools_enable"] is False
+        assert properties["watch_tools"] is False
+        assert properties["celery_conf"] == {
+            "result_backend": f"db+sqlite:///{config_directory / 'celery_results.sqlite'}",
+            "worker_hijack_root_logger": False,
+        }
+        assert gravity["process_manager"] == "multiprocessing"
+        assert gravity["service_command_style"] == "direct"
+        assert gravity["virtualenv"] == sys.prefix
+        assert gravity["gunicorn"] == {
+            "bind": "127.0.0.1:8765",
+            "preload": False,
+            "workers": 1,
+        }
+        assert gravity["celery"] == {
+            "enable": True,
+            "enable_beat": False,
+            "concurrency": 1,
+            "pool": "solo",
+            "queues": "galaxy.internal,galaxy.external",
+        }
+        assert gravity["gx_it_proxy"] == {"enable": False}
+        assert "galaxy_root" not in gravity
+        assert config.env == {
+            "GALAXY_CONFIG_FILE": str(config_directory / "galaxy.yml"),
+            "GRAVITY_STATE_DIR": str(config_directory / "gravity"),
+        }
+        assert config.galaxy_root is None
+        assert config.galaxy_url == "http://127.0.0.1:8765"
+
+
+def test_installed_galaxy_startup_uses_gravity_from_planemo_environment(tmp_path, monkeypatch):
+    config_directory = tmp_path / "config"
+    config_directory.mkdir()
+    bin_directory = tmp_path / "bin"
+    bin_directory.mkdir()
+    python = bin_directory / "python"
+    galaxy = bin_directory / "galaxy"
+    python.touch()
+    galaxy.touch()
+    monkeypatch.setattr("planemo.galaxy.config.sys.executable", str(python))
+
+    with installed_galaxy_config(
+        create_test_context(),
+        [],
+        config_directory=str(config_directory),
+        port=8765,
+    ) as config:
+        command = config.startup_command(create_test_context())
+
+    assert command == (
+        f"{galaxy} --config-file {config_directory / 'galaxy.yml'} " f"--state-dir {config_directory / 'gravity'}"
+    )
 
 
 def test_embedded_test_configuration_uses_explicit_empty_plugin_directories(tmp_path):

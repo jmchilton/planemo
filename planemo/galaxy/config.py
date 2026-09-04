@@ -31,6 +31,7 @@ from typing import (
     TYPE_CHECKING,
 )
 
+import click
 from cryptography.fernet import Fernet
 from galaxy.tool_util.deps import docker_util
 from galaxy.util.commands import argv_to_str
@@ -187,7 +188,7 @@ UNINITIALIZED = object()
 
 @dataclass(frozen=True)
 class _ManagedGalaxyConfigArtifacts:
-    """Files and settings shared by checkout and embedded Galaxy runtimes."""
+    """Files and settings shared by checkout and package-installed Galaxy runtimes."""
 
     config_directory: str
     env: Dict[str, Any]
@@ -204,7 +205,9 @@ class _ManagedGalaxyConfigArtifacts:
 def galaxy_config(ctx, runnables, **kwds):
     """Set up a ``GalaxyConfig`` in an auto-cleaned context."""
     c = local_galaxy_config
-    if kwds.get("dockerize", False):
+    if kwds.get("engine") == "installed_galaxy":
+        c = installed_galaxy_config
+    elif kwds.get("dockerize", False):
         c = docker_galaxy_config
     elif kwds.get("external", False):
         c = external_galaxy_config
@@ -396,6 +399,57 @@ def _configure_embedded_properties(properties, config_join):
     )
 
 
+def _configure_installed_properties(properties, config_join):
+    """Configure Galaxy services that Gravity will run in child processes."""
+    properties["bootstrap_admin_api_key"] = properties.pop("master_api_key")
+    properties.update(
+        data_dir=config_join("data"),
+        enable_celery_tasks=True,
+        interactivetools_enable=False,
+        monitor_thread_join_timeout=5,
+        watch_tools=False,
+        amqp_internal_connection=f"sqlalchemy+sqlite:///{config_join('celery_broker.sqlite')}",
+        celery_conf={
+            "result_backend": f"db+sqlite:///{config_join('celery_results.sqlite')}",
+            "worker_hijack_root_logger": False,
+        },
+    )
+
+
+def _write_installed_config(properties, template_args, config_join):
+    galaxy_properties = {
+        key: _sub(value, template_args) if isinstance(value, str) else value
+        for key, value in properties.items()
+        if value is not None
+    }
+    galaxy_config_file = config_join("galaxy.yml")
+    gravity = {
+        "process_manager": "multiprocessing",
+        "service_command_style": "direct",
+        "virtualenv": sys.prefix,
+        "log_dir": config_join("gravity", "log"),
+        "gunicorn": {
+            "bind": f"{template_args['host']}:{template_args['port']}",
+            "preload": False,
+            "workers": 1,
+        },
+        "celery": {
+            "enable": True,
+            "enable_beat": False,
+            "concurrency": 1,
+            "pool": "solo",
+            "queues": "galaxy.internal,galaxy.external",
+        },
+        "gx_it_proxy": {"enable": False},
+    }
+    write_file(galaxy_config_file, json.dumps({"galaxy": galaxy_properties, "gravity": gravity}))
+    env = {
+        "GALAXY_CONFIG_FILE": galaxy_config_file,
+        "GRAVITY_STATE_DIR": config_join("gravity"),
+    }
+    return env, galaxy_config_file, galaxy_properties
+
+
 def _write_embedded_config(properties, template_args, config_join):
     galaxy_properties = {
         key: _sub(value, template_args) if isinstance(value, str) else value
@@ -435,8 +489,9 @@ def _prepare_managed_galaxy_config(
     data_manager_config_paths,
     galaxy_root,
     for_tests,
-    embedded,
     kwds,
+    installed,
+    embedded=False,
 ):
     """Generate the checkout-independent files used by local Galaxy engines."""
 
@@ -464,7 +519,7 @@ def _prepare_managed_galaxy_config(
     _ensure_directory(shed_tool_path)
 
     empty_tool_conf = config_join("empty_tool_conf.xml")
-    if embedded and not tool_data_tables:
+    if (embedded or installed) and not tool_data_tables:
         # Installed Galaxy otherwise falls back to checkout-relative sample
         # tables and emits errors for files that do not exist in wheel mode.
         empty_tool_data_table_conf = config_join("empty_tool_data_table_conf.xml")
@@ -535,6 +590,8 @@ def _prepare_managed_galaxy_config(
     properties["database_connection"] = _database_connection(database_location, **kwds)
     if embedded:
         _configure_embedded_properties(properties, config_join)
+    elif installed:
+        _configure_installed_properties(properties, config_join)
     else:
         properties["amqp_internal_connection"] = f"sqlalchemy+sqlite:///{config_join('celery_broker.sqlite')}"
     if kwds.get("mulled_containers", False):
@@ -553,6 +610,8 @@ def _prepare_managed_galaxy_config(
 
     if embedded:
         env, galaxy_config_file, galaxy_properties = _write_embedded_config(properties, template_args, config_join)
+    elif installed:
+        env, galaxy_config_file, galaxy_properties = _write_installed_config(properties, template_args, config_join)
     else:
         env, galaxy_config_file, galaxy_properties = _write_checkout_config(
             properties,
@@ -616,8 +675,8 @@ def local_galaxy_config(ctx, runnables, for_tests=False, **kwds):
             data_manager_config_paths=data_manager_config_paths,
             galaxy_root=galaxy_root,
             for_tests=for_tests,
-            embedded=False,
             kwds=kwds,
+            installed=False,
         )
         artifacts.env.update(install_env)
 
@@ -655,10 +714,71 @@ def embedded_galaxy_config(ctx, runnables, for_tests=False, **kwds):
             data_manager_config_paths=data_manager_config_paths,
             galaxy_root=None,
             for_tests=for_tests,
-            embedded=True,
             kwds=kwds,
+            installed=False,
+            embedded=True,
         )
         yield EmbeddedGalaxyConfig(ctx, artifacts, runnables)
+
+
+def _installed_option_was_selected(ctx, kwds, name, neutral_value):
+    value = kwds.get(name, neutral_value)
+    source = ctx.get_option_source(name, None)
+    if source is not None:
+        return source != OptionSource.default and value != neutral_value
+    return value != neutral_value
+
+
+def validate_installed_options(ctx, kwds):
+    """Reject source-checkout options that have no package-installed meaning."""
+    checkout_options = {
+        "galaxy_root": None,
+        "cwl_galaxy_root": None,
+        "galaxy_python_version": None,
+        "install_galaxy": False,
+        "skip_venv": False,
+        "no_cache_galaxy": False,
+        "galaxy_branch": "master",
+        "galaxy_source": "https://github.com/galaxyproject/galaxy",
+    }
+    selected = [
+        f"--{name}"
+        for name, neutral_value in checkout_options.items()
+        if _installed_option_was_selected(ctx, kwds, name, neutral_value)
+    ]
+    if selected:
+        options = ", ".join(selected)
+        raise click.UsageError(
+            f"--engine installed_galaxy uses Galaxy packages from Planemo's environment; unsupported option(s): "
+            f"{options}."
+        )
+
+
+@contextlib.contextmanager
+def installed_galaxy_config(ctx, runnables, for_tests=False, **kwds):
+    """Generate configuration for a package-installed Galaxy run by Gravity."""
+
+    validate_installed_options(ctx, kwds)
+    test_data_dir = _find_test_data(runnables, **kwds)
+    tool_data_tables = _find_tool_data_table(runnables, test_data_dir=test_data_dir, **kwds)
+    data_manager_config_paths = [r.data_manager_conf_path for r in runnables if r.data_manager_conf_path]
+    _configure_mulled_containers(ctx, kwds)
+    kwds["disable_gxits"] = True
+
+    with _config_directory(ctx, **kwds) as config_directory:
+        artifacts = _prepare_managed_galaxy_config(
+            ctx=ctx,
+            config_directory=config_directory,
+            runnables=runnables,
+            test_data_dir=test_data_dir,
+            tool_data_tables=tool_data_tables,
+            data_manager_config_paths=data_manager_config_paths,
+            galaxy_root=None,
+            for_tests=for_tests,
+            installed=True,
+            kwds=kwds,
+        )
+        yield InstalledGalaxyConfig(ctx, artifacts, runnables)
 
 
 def _init_interactivetools_db(path):
@@ -1270,6 +1390,130 @@ class EmbeddedGalaxyConfig(BaseManagedGalaxyConfig):
         from .serve import sleep_for_serve
 
         sleep_for_serve()
+
+
+class InstalledGalaxyConfig(BaseManagedGalaxyConfig):
+    """Configuration and process control for a package-installed Galaxy."""
+
+    def __init__(self, ctx, artifacts, runnables):
+        super().__init__(
+            ctx,
+            artifacts.config_directory,
+            artifacts.env,
+            artifacts.test_data_dir,
+            artifacts.port,
+            artifacts.server_name,
+            artifacts.master_api_key,
+            runnables,
+            artifacts.kwds,
+        )
+        self.galaxy_config_file = artifacts.galaxy_config_file
+        self.galaxy_properties = artifacts.galaxy_properties
+        self.use_multiprocessing = True
+        self._daemon_process = None
+        self._daemon_control_fd = None
+        host = artifacts.kwds.get("host", "127.0.0.1")
+        self.galaxy_url = f"http://{host}:{artifacts.port}"
+
+    @property
+    def gravity_state_dir(self):
+        return self.env["GRAVITY_STATE_DIR"]
+
+    @property
+    def log_file(self):
+        return os.path.join(self.config_directory, "installed.log")
+
+    @property
+    def pid_file(self):
+        return os.path.join(self.config_directory, "installed.pid")
+
+    @property
+    def log_contents(self):
+        if not os.path.exists(self.log_file):
+            return ""
+        with open(self.log_file, errors="replace") as log_fh:
+            return log_fh.read()
+
+    @property
+    def service_log_contents(self) -> Dict[str, str]:
+        contents = "".join(deque(self.log_contents.splitlines(keepends=True), SERVICE_LOG_TAIL_LINES)).rstrip()
+        return {"installed.log": contents} if contents else {}
+
+    def _gravity_executable(self):
+        executable = os.path.join(os.path.dirname(sys.executable), "galaxy")
+        if not os.path.isfile(executable):
+            raise click.ClickException(
+                "--engine installed_galaxy requires Gravity's 'galaxy' command in Planemo's Python environment."
+            )
+        return executable
+
+    def startup_command(self, ctx, **kwds):
+        return argv_to_str(
+            [
+                self._gravity_executable(),
+                "--config-file",
+                self.galaxy_config_file,
+                "--state-dir",
+                self.gravity_state_dir,
+            ]
+        )
+
+    def start_daemon(self, command):
+        """Run foreground Gravity below Planemo's bounded daemon monitor."""
+        environ = os.environ.copy()
+        environ.update(self.env)
+        monitor_read_fd, monitor_write_fd = os.pipe()
+        try:
+            with open(self.log_file, "ab", buffering=0) as log:
+                process = subprocess.Popen(
+                    [sys.executable, "-m", "planemo.galaxy.daemon_monitor", str(monitor_read_fd), command],
+                    env=environ,
+                    pass_fds=[monitor_read_fd],
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+        except BaseException:
+            os.close(monitor_write_fd)
+            raise
+        finally:
+            os.close(monitor_read_fd)
+        self._daemon_process = process
+        self._daemon_control_fd = monitor_write_fd
+        try:
+            with open(self.pid_file, "w") as pid_file:
+                pid_file.write(str(process.pid))
+        except BaseException:
+            self.kill()
+            raise
+        return process
+
+    def detach_daemon(self):
+        if self._daemon_control_fd is not None:
+            try:
+                os.write(self._daemon_control_fd, b"D")
+            except BrokenPipeError:
+                pass
+            finally:
+                os.close(self._daemon_control_fd)
+                self._daemon_control_fd = None
+
+    def kill(self):
+        asked_to_stop = self._daemon_control_fd is not None
+        if asked_to_stop:
+            os.close(self._daemon_control_fd)
+            self._daemon_control_fd = None
+        if self._daemon_process is not None:
+            _shut_down_daemon_monitor(self._daemon_process, asked_to_stop=asked_to_stop)
+        else:
+            kill_pid_file(self.pid_file)
+        try:
+            os.unlink(self.pid_file)
+        except FileNotFoundError:
+            pass
+
+    def cleanup(self):
+        shutil.rmtree(self.config_directory, CLEANUP_IGNORE_ERRORS)
 
 
 class DockerGalaxyConfig(BaseManagedGalaxyConfig):

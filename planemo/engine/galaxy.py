@@ -241,6 +241,14 @@ class LocalManagedGalaxyEngineWithSingularityDB(SingularityDBMixin, LocalManaged
     pass
 
 
+class InstalledGalaxyEngine(LocalManagedGalaxyEngine):
+    """A managed, package-installed Galaxy launched through Gravity."""
+
+
+class InstalledGalaxyEngineWithSingularityDB(SingularityDBMixin, InstalledGalaxyEngine):
+    pass
+
+
 class EmbeddedGalaxyEngine(LocalManagedGalaxyEngine):
     """A managed Galaxy loaded from packages into the Planemo process."""
 

@@ -10,6 +10,8 @@ from .galaxy import (
     EmbeddedGalaxyEngine,
     EmbeddedGalaxyEngineWithSingularityDB,
     ExternalGalaxyEngine,
+    InstalledGalaxyEngine,
+    InstalledGalaxyEngineWithSingularityDB,
     LocalManagedGalaxyEngine,
     LocalManagedGalaxyEngineWithSingularityDB,
 )
@@ -21,7 +23,13 @@ UNKNOWN_ENGINE_TYPE_MESSAGE = "Unknown engine type specified [%s]."
 def is_galaxy_engine(**kwds):
     """Return True iff the engine configured is :class:`GalaxyEngine`."""
     engine_type_str = kwds.get("engine", "galaxy")
-    return engine_type_str in ["galaxy", "embedded_galaxy", "docker_galaxy", "external_galaxy"]
+    return engine_type_str in [
+        "galaxy",
+        "installed_galaxy",
+        "embedded_galaxy",
+        "docker_galaxy",
+        "external_galaxy",
+    ]
 
 
 def build_engine(ctx, **kwds):
@@ -32,6 +40,11 @@ def build_engine(ctx, **kwds):
             engine_type = LocalManagedGalaxyEngineWithSingularityDB
         else:
             engine_type = LocalManagedGalaxyEngine
+    elif engine_type_str == "installed_galaxy":
+        if "database_type" in kwds and kwds["database_type"] == "postgres_singularity":
+            engine_type = InstalledGalaxyEngineWithSingularityDB
+        else:
+            engine_type = InstalledGalaxyEngine
     elif engine_type_str == "embedded_galaxy":
         if "database_type" in kwds and kwds["database_type"] == "postgres_singularity":
             engine_type = EmbeddedGalaxyEngineWithSingularityDB

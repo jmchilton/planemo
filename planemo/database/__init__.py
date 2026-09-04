@@ -7,10 +7,12 @@ to a production database server.
 
 from .factory import (
     create_database_source,
+    database_source_context,
     started_database_source,
 )
 
 __all__ = (
     "create_database_source",
+    "database_source_context",
     "started_database_source",
 )

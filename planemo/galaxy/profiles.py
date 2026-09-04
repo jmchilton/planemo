@@ -14,12 +14,18 @@ from gxjobconfinit import (
     ConfigArgs,
 )
 
-from planemo.database import started_database_source
+from planemo.database import database_source_context
 from planemo.galaxy.api import test_credentials_valid
 from .config import DATABASE_LOCATION_TEMPLATE
 
 PROFILE_OPTIONS_JSON_NAME = "planemo_profile_options.json"
 ALREADY_EXISTS_EXCEPTION = "Cannot create profile with name [%s], directory [%s] already exists."
+SINGULARITY_PROFILE_OPTIONS = (
+    "postgres_storage_location",
+    "singularity_cmd",
+    "singularity_sudo",
+    "singularity_sudo_cmd",
+)
 
 
 def profile_exists(ctx, profile_name, **kwds):
@@ -36,17 +42,19 @@ def list_profiles(ctx, **kwds):
 def delete_profile(ctx, profile_name, **kwds):
     """Delete profile with the specified name."""
     profile_directory = _profile_directory(ctx, profile_name)
-    profile_options = _read_profile_options(profile_directory)
-    profile_options, profile_options_path = _load_profile_to_json(ctx, profile_name)
+    profile_options, _ = _load_profile_to_json(ctx, profile_name)
     if profile_options["engine"] != "external_galaxy":
         database_type = profile_options.get("database_type")
         kwds["database_type"] = database_type
         if database_type != "sqlite":
-            database_source = started_database_source(profile_directory=profile_directory, **kwds)
-            database_identifier = _profile_to_database_identifier(profile_name)
-            database_source.delete_database(
-                database_identifier,
+            for option in SINGULARITY_PROFILE_OPTIONS:
+                if option in profile_options:
+                    kwds[option] = profile_options[option]
+            database_identifier = profile_options.get(
+                "database_identifier", _profile_to_database_identifier(profile_name)
             )
+            with database_source_context(profile_directory=profile_directory, **kwds) as database_source:
+                database_source.delete_database(database_identifier)
     shutil.rmtree(profile_directory)
 
 
@@ -93,12 +101,25 @@ def _create_profile_local(ctx, profile_directory, profile_name, kwds):
         database_location = os.path.join(profile_directory, "galaxy.sqlite")
         database_connection = DATABASE_LOCATION_TEMPLATE % database_location
     else:
-        database_source = started_database_source(profile_directory=profile_directory, **kwds)
         database_identifier = _profile_to_database_identifier(profile_name)
-        database_source.create_database(
-            database_identifier,
-        )
-        database_connection = database_source.sqlalchemy_url(database_identifier)
+        with database_source_context(profile_directory=profile_directory, **kwds) as database_source:
+            database_source.create_database(database_identifier)
+            database_connection = database_source.sqlalchemy_url(database_identifier)
+
+        if database_type == "postgres_singularity":
+            # This connection is derived again for each run so the managed
+            # container is started for that run instead of being mistaken for
+            # an externally managed, always-available database.
+            stored_options = {
+                "database_type": database_type,
+                "database_identifier": database_identifier,
+                "postgres_storage_location": database_source.database_location,
+                "engine": "galaxy",
+            }
+            for option in SINGULARITY_PROFILE_OPTIONS:
+                if option in kwds and option not in stored_options:
+                    stored_options[option] = kwds[option]
+            return stored_options
 
     return {
         "database_type": database_type,

@@ -7,6 +7,8 @@ from typing import Optional
 class DatabaseSource(metaclass=abc.ABCMeta):
     """Interface describing a source of profile databases."""
 
+    keep_running_after_database_commands = False
+
     @abc.abstractmethod
     def create_database(self, identifier):
         """Create a database with specified short identifier.

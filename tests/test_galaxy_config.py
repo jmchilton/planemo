@@ -147,6 +147,34 @@ def test_database_connection_manages_named_postgres_backend():
     database_source.sqlalchemy_url.assert_called_once_with("galaxy")
 
 
+def test_database_connection_restarts_singularity_profile_database():
+    database_source = mock.Mock()
+    database_source.sqlalchemy_url.return_value = (
+        "postgresql://galaxy:mysecretpassword@/plnmoprof_profile1234?host=/profiles/profile1234/postgres/pgrun"
+    )
+    with mock.patch("planemo.galaxy.config.create_database_source", return_value=database_source) as create_source:
+        with _database_location() as database_location:
+            with _database_connection(
+                database_location,
+                database_type="postgres_singularity",
+                database_identifier="plnmoprof_profile1234",
+                postgres_storage_location="/profiles/profile1234/postgres",
+                singularity_cmd="apptainer",
+            ) as connection:
+                assert connection == database_source.sqlalchemy_url.return_value
+                database_source.start.assert_called_once_with()
+                database_source.stop.assert_not_called()
+
+    create_source.assert_called_once_with(
+        database_type="postgres_singularity",
+        database_identifier="plnmoprof_profile1234",
+        postgres_storage_location="/profiles/profile1234/postgres",
+        singularity_cmd="apptainer",
+    )
+    database_source.sqlalchemy_url.assert_called_once_with("plnmoprof_profile1234")
+    database_source.stop.assert_called_once_with()
+
+
 def _assert_property_is(config, prop, value):
     env_var = "GALAXY_CONFIG_OVERRIDE_%s" % prop.upper()
     assert config.env[env_var] == value

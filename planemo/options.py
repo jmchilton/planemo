@@ -1436,7 +1436,6 @@ def galaxy_config_options():
         profile_database_options(),
         file_path_option(),
         database_connection_option(),
-        postgres_database_storage_location_option(),
         shed_tools_conf_option(),
         shed_tools_directory_option(),
         shed_tool_data_table_config_option(),
@@ -1815,8 +1814,10 @@ def postgres_datatype_type_option():
 
 def postgres_database_storage_location_option():
     return planemo_option(
+        "--postgres-storage-location",
         "--postgres_storage_location",
-        type=str,
+        "postgres_storage_location",
+        type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
         help="storage path for postgres database, used for local singularity postgres.",
         default=None,
         use_global_config=True,
@@ -1896,6 +1897,8 @@ def profile_database_options():
         postgres_datatype_type_option(),
         database_type_option(),
         database_source_options(),
+        postgres_database_storage_location_option(),
+        singularity_config_options(),
     )
 
 

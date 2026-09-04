@@ -30,5 +30,10 @@ class ProfileCommandsTestCase(CliTestCase):
         finally:
             stop_postgres_docker()
 
+    @skip_unless_environ("PLANEMO_ENABLE_POSTGRES_TESTS")
+    @skip_unless_executable("singularity")
+    def test_profile_commands_singularity(self):
+        self._profile_commands(database_type="postgres_singularity")
+
     def test_profile_commands_sqlite(self):
         self._profile_commands(database_type="sqlite")

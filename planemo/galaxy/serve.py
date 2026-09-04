@@ -125,15 +125,19 @@ def serve_daemon(ctx, runnables=None, **kwds):
     kwds["daemon"] = True
     try:
         with serve(ctx, runnables, **kwds) as config:
-            yield config
+            try:
+                yield config
+            finally:
+                # Stop Galaxy while galaxy_config's managed database context is
+                # still active. In particular, a Singularity PostgreSQL socket
+                # must outlive every Galaxy process using it.
+                if ctx.verbose:
+                    print("Galaxy Log:")
+                    print(config.log_contents)
+                config.kill()
     finally:
-        if config:
-            if ctx.verbose:
-                print("Galaxy Log:")
-                print(config.log_contents)
-            config.kill()
-            if not kwds.get("no_cleanup", False):
-                config.cleanup()
+        if config and not kwds.get("no_cleanup", False):
+            config.cleanup()
 
 
 def sleep_for_serve():

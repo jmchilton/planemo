@@ -54,6 +54,10 @@ def stop_postgres_docker(name=DEFAULT_CONTAINER_NAME, **kwds):
 class DockerPostgresDatabaseSource(ExecutesPostgresSqlMixin, DatabaseSource):
     """Postgres database running inside a Docker container."""
 
+    # This container uses --rm and has no persistent volume. Database
+    # administration commands therefore leave it running between invocations.
+    keep_running_after_database_commands = True
+
     def __init__(self, **kwds):
         """Construct a postgres database source from planemo configuration."""
         self.psql_path = "psql"

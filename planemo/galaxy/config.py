@@ -46,7 +46,10 @@ from planemo import (
     network_util,
 )
 from planemo.config import OptionSource
-from planemo.database import create_database_source
+from planemo.database import (
+    create_database_source,
+    is_managed_database_type,
+)
 from planemo.deps import ensure_dependency_resolvers_conf_configured
 from planemo.docker import docker_host_args
 from planemo.galaxy.workflows import (
@@ -174,10 +177,6 @@ DEFAULT_GALAXY_SOURCE = "https://github.com/galaxyproject/galaxy"
 CWL_GALAXY_SOURCE = "https://github.com/common-workflow-language/galaxy"
 
 DATABASE_LOCATION_TEMPLATE = "sqlite:///%s?isolation_level=IMMEDIATE"
-
-# Database types ``_database_connection`` will bring up a server for. A run that
-# named none of these stays on the sqlite file in its config directory.
-MANAGED_DATABASE_TYPES = ("postgres", "postgres_docker", "postgres_singularity")
 
 COMMAND_STARTUP_COMMAND = "./scripts/common_startup.sh ${COMMON_STARTUP_ARGS}"
 
@@ -1406,11 +1405,14 @@ def _database_connection(
     """Yield the ``database_connection`` a managed Galaxy should run against."""
     if database_connection:
         yield database_connection
-    elif database_type in MANAGED_DATABASE_TYPES:
+    elif is_managed_database_type(database_type):
         database_source = create_database_source(database_type=database_type, **kwds)
         try:
             database_source.start()
-            yield database_source.sqlalchemy_url(kwds.get("database_identifier", "galaxy"))
+            database_identifier = kwds.get("database_identifier", "galaxy")
+            if database_identifier not in database_source.list_databases():
+                database_source.create_database(database_identifier)
+            yield database_source.sqlalchemy_url(database_identifier)
         finally:
             database_source.stop()
     else:

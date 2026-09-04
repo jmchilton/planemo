@@ -5,6 +5,7 @@ import json
 import os
 from unittest import mock
 
+import pytest
 import yaml
 
 from planemo.galaxy.config import (
@@ -133,22 +134,27 @@ def test_database_connection_override_wins():
                 assert connection == conn, database_type
 
 
-def test_database_connection_manages_named_postgres_backend():
+@pytest.mark.parametrize("database_type", ("postgres", "postgres_docker", "postgres_singularity"))
+def test_database_connection_manages_named_postgres_backend(database_type):
     """A named postgres backend is started for the life of the config and stopped after."""
     database_source = mock.Mock()
+    database_source.list_databases.return_value = ["postgres"]
     database_source.sqlalchemy_url.return_value = "postgresql://galaxy@localhost/galaxy"
     with mock.patch("planemo.galaxy.config.create_database_source", return_value=database_source):
         with _database_location() as database_location:
-            with _database_connection(database_location, database_type="postgres") as connection:
+            with _database_connection(database_location, database_type=database_type) as connection:
                 assert connection == "postgresql://galaxy@localhost/galaxy"
                 database_source.start.assert_called_once_with()
                 database_source.stop.assert_not_called()
     database_source.stop.assert_called_once_with()
+    database_source.list_databases.assert_called_once_with()
+    database_source.create_database.assert_called_once_with("galaxy")
     database_source.sqlalchemy_url.assert_called_once_with("galaxy")
 
 
 def test_database_connection_restarts_singularity_profile_database():
     database_source = mock.Mock()
+    database_source.list_databases.return_value = ["postgres", "plnmoprof_profile1234"]
     database_source.sqlalchemy_url.return_value = (
         "postgresql://galaxy:mysecretpassword@/plnmoprof_profile1234?host=/profiles/profile1234/postgres/pgrun"
     )
@@ -172,6 +178,7 @@ def test_database_connection_restarts_singularity_profile_database():
         singularity_cmd="apptainer",
     )
     database_source.sqlalchemy_url.assert_called_once_with("plnmoprof_profile1234")
+    database_source.create_database.assert_not_called()
     database_source.stop.assert_called_once_with()
 
 

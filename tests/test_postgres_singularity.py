@@ -18,6 +18,7 @@ from planemo.database.factory import (
     database_source_context,
     started_database_source,
 )
+from planemo.database.interface import DatabaseConfigurationError
 from planemo.database.postgres_singularity import (
     CONTAINER_SOCKET_DIRECTORY,
     DEFAULT_DOCKERIMAGE,
@@ -30,12 +31,13 @@ serve_module = importlib.import_module("planemo.galaxy.serve")
 
 
 def _source(tmp_path, **kwds):
-    return SingularityPostgresDatabaseSource(
+    source = SingularityPostgresDatabaseSource(
         postgres_storage_location=str(tmp_path / "postgres"),
-        postgres_startup_timeout=5,
-        postgres_stop_timeout=2,
         **kwds,
     )
+    source.startup_timeout = 5
+    source.stop_timeout = 2
+    return source
 
 
 @click.command()
@@ -57,14 +59,26 @@ def test_profile_database_options_accept_storage_aliases_and_singularity_command
 
 
 def test_database_administration_requires_persistent_storage():
-    with pytest.raises(click.UsageError, match="--postgres-storage-location"):
-        started_database_source(database_type="postgres_singularity")
+    with mock.patch("planemo.database.postgres_singularity.mkdtemp") as make_temp_directory:
+        with pytest.raises(DatabaseConfigurationError, match="--postgres-storage-location"):
+            started_database_source(database_type="postgres_singularity", for_database_commands=True)
+    make_temp_directory.assert_not_called()
 
 
 def test_database_command_reports_missing_persistent_storage():
     result = CliRunner().invoke(planemo, ["database_list", "--database_type", "postgres_singularity"])
     assert result.exit_code == 2
     assert "requires --postgres-storage-location" in result.output
+
+
+def test_profile_options_are_owned_by_the_singularity_backend(tmp_path):
+    source = _source(tmp_path, singularity_cmd="apptainer", singularity_sudo=False)
+
+    assert source.profile_options() == {
+        "postgres_storage_location": str(tmp_path / "postgres"),
+        "singularity_cmd": "apptainer",
+        "singularity_sudo": False,
+    }
 
 
 def test_start_waits_for_pg_isready_not_just_initialized_cluster(tmp_path):
@@ -215,6 +229,8 @@ def test_managed_galaxy_stops_before_its_database_context_exits(monkeypatch):
         try:
             yield config
         finally:
+            if kwds.get("stop_daemon_after_serve"):
+                config.kill()
             events.append("database stopped")
 
     monkeypatch.setattr(serve_module, "serve", configured_serve)
@@ -229,3 +245,24 @@ def test_managed_galaxy_stops_before_its_database_context_exits(monkeypatch):
         "database stopped",
         "configuration cleaned",
     ]
+
+
+def test_managed_galaxy_exception_has_single_shutdown_owner(monkeypatch):
+    config = SimpleNamespace(kill=mock.Mock(), cleanup=mock.Mock())
+
+    @contextlib.contextmanager
+    def configured_serve(*args, **kwds):
+        try:
+            yield config
+        finally:
+            if kwds.get("stop_daemon_after_serve"):
+                config.kill()
+
+    monkeypatch.setattr(serve_module, "serve", configured_serve)
+
+    with pytest.raises(RuntimeError, match="caller failed"):
+        with serve_module.serve_daemon(SimpleNamespace(verbose=False)):
+            raise RuntimeError("caller failed")
+
+    config.kill.assert_called_once_with()
+    config.cleanup.assert_called_once_with()

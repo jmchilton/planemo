@@ -4,7 +4,10 @@ import click
 
 from planemo import options
 from planemo.cli import command_function
-from planemo.database import database_source_context
+from planemo.database import (
+    database_source_context,
+    DatabaseConfigurationError,
+)
 
 
 @click.command("database_delete")
@@ -53,5 +56,8 @@ def cli(ctx, identifier, **kwds):
     \b
         *:*:*:postgres:<postgres_password>
     """
-    with database_source_context(**kwds) as datasource:
-        datasource.delete_database(identifier)
+    try:
+        with database_source_context(for_database_commands=True, **kwds) as datasource:
+            datasource.delete_database(identifier)
+    except DatabaseConfigurationError as e:
+        raise click.UsageError(str(e)) from e

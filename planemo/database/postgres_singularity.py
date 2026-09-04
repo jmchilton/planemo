@@ -10,7 +10,10 @@ from typing import Optional
 from galaxy.util.commands import shell_process
 
 from planemo.io import info
-from .interface import DatabaseSource
+from .interface import (
+    DatabaseConfigurationError,
+    DatabaseSource,
+)
 from .postgres import (
     _CommandBuilder,
     ExecutesPostgresSqlMixin,
@@ -73,10 +76,15 @@ def start_postgres_singularity(
 
 
 class SingularityPostgresDatabaseSource(ExecutesPostgresSqlMixin, DatabaseSource):
-    """
-    Postgres database running inside a Singularity container. Should be used with
-    "with" statements to automatically start and stop the container.
-    """
+    """Postgres database source running inside a Singularity container."""
+
+    store_connection_in_profile = False
+    PROFILE_OPTIONS = (
+        "postgres_storage_location",
+        "singularity_cmd",
+        "singularity_sudo",
+        "singularity_sudo_cmd",
+    )
 
     def __init__(self, profile_directory: Optional[str] = None, **kwds):
         """Construct a postgres database source from planemo configuration."""
@@ -93,12 +101,12 @@ class SingularityPostgresDatabaseSource(ExecutesPostgresSqlMixin, DatabaseSource
         elif profile_directory:
             self.database_location = os.path.join(profile_directory, "postgres")
         else:
-            self.database_location = os.path.join(mkdtemp(suffix="_planemo_postgres_db"))
+            self.database_location = mkdtemp(suffix="_planemo_postgres_db")
         self.database_location = os.path.abspath(os.path.expanduser(self.database_location))
         self.database_socket_dir = os.path.join(self.database_location, "pgrun")
         self.log_file = os.path.join(self.database_location, "postgres.log")
-        self.startup_timeout = kwds.get("postgres_startup_timeout", DEFAULT_STARTUP_TIMEOUT)
-        self.stop_timeout = kwds.get("postgres_stop_timeout", DEFAULT_STOP_TIMEOUT)
+        self.startup_timeout = DEFAULT_STARTUP_TIMEOUT
+        self.stop_timeout = DEFAULT_STOP_TIMEOUT
         self._kwds = kwds
         self.running_process = None
 
@@ -212,6 +220,21 @@ class SingularityPostgresDatabaseSource(ExecutesPostgresSqlMixin, DatabaseSource
             identifier,
             self.database_socket_dir,
         )
+
+    @classmethod
+    def validate_configuration(cls, profile_directory=None, for_database_commands=False, **kwds):
+        """Require stable storage for separate database administration commands."""
+        if for_database_commands and profile_directory is None and not kwds.get("postgres_storage_location"):
+            raise DatabaseConfigurationError(
+                "Database administration with postgres_singularity requires --postgres-storage-location so separate "
+                "commands operate on the same PostgreSQL cluster."
+            )
+
+    def profile_options(self):
+        """Return enough configuration to restart this profile's container."""
+        options = super().profile_options()
+        options["postgres_storage_location"] = self.database_location
+        return options
 
 
 __all__ = ("SingularityPostgresDatabaseSource",)

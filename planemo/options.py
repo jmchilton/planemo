@@ -1154,7 +1154,7 @@ def docker_sudo_option():
 
 def singularity_sudo_option():
     return planemo_option(
-        "--singularity_sudo/--no_singularity_sudo", is_flag=True, help="Flag to use sudo when running docker."
+        "--singularity_sudo/--no_singularity_sudo", is_flag=True, help="Flag to use sudo when running Singularity."
     )
 
 
@@ -1818,7 +1818,7 @@ def postgres_database_storage_location_option():
         "--postgres_storage_location",
         "postgres_storage_location",
         type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
-        help="storage path for postgres database, used for local singularity postgres.",
+        help="Storage path for PostgreSQL data managed through Singularity.",
         default=None,
         use_global_config=True,
     )

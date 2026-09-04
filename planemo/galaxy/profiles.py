@@ -14,18 +14,15 @@ from gxjobconfinit import (
     ConfigArgs,
 )
 
-from planemo.database import database_source_context
+from planemo.database import (
+    database_source_class,
+    database_source_context,
+)
 from planemo.galaxy.api import test_credentials_valid
 from .config import DATABASE_LOCATION_TEMPLATE
 
 PROFILE_OPTIONS_JSON_NAME = "planemo_profile_options.json"
 ALREADY_EXISTS_EXCEPTION = "Cannot create profile with name [%s], directory [%s] already exists."
-SINGULARITY_PROFILE_OPTIONS = (
-    "postgres_storage_location",
-    "singularity_cmd",
-    "singularity_sudo",
-    "singularity_sudo_cmd",
-)
 
 
 def profile_exists(ctx, profile_name, **kwds):
@@ -47,7 +44,8 @@ def delete_profile(ctx, profile_name, **kwds):
         database_type = profile_options.get("database_type")
         kwds["database_type"] = database_type
         if database_type != "sqlite":
-            for option in SINGULARITY_PROFILE_OPTIONS:
+            source_class = database_source_class(database_type)
+            for option in source_class.PROFILE_OPTIONS:
                 if option in profile_options:
                     kwds[option] = profile_options[option]
             database_identifier = profile_options.get(
@@ -68,18 +66,22 @@ def create_profile(ctx, profile_name, **kwds):
 
     os.makedirs(profile_directory)
 
-    if engine_type == "docker_galaxy":
-        create_for_engine = _create_profile_docker
-    elif engine_type == "external_galaxy" or kwds.get("galaxy_url"):
-        create_for_engine = _create_profile_external
-    else:
-        create_for_engine = _create_profile_local
+    try:
+        if engine_type == "docker_galaxy":
+            create_for_engine = _create_profile_docker
+        elif engine_type == "external_galaxy" or kwds.get("galaxy_url"):
+            create_for_engine = _create_profile_external
+        else:
+            create_for_engine = _create_profile_local
 
-    stored_profile_options = create_for_engine(ctx, profile_directory, profile_name, kwds)
+        stored_profile_options = create_for_engine(ctx, profile_directory, profile_name, kwds)
 
-    profile_options_path = _stored_profile_options_path(profile_directory)
-    with open(profile_options_path, "w") as f:
-        json.dump(stored_profile_options, f)
+        profile_options_path = _stored_profile_options_path(profile_directory)
+        with open(profile_options_path, "w") as f:
+            json.dump(stored_profile_options, f)
+    except BaseException:
+        shutil.rmtree(profile_directory, ignore_errors=True)
+        raise
 
 
 def _create_profile_docker(ctx, profile_directory, profile_name, kwds):
@@ -106,26 +108,20 @@ def _create_profile_local(ctx, profile_directory, profile_name, kwds):
             database_source.create_database(database_identifier)
             database_connection = database_source.sqlalchemy_url(database_identifier)
 
-        if database_type == "postgres_singularity":
-            # This connection is derived again for each run so the managed
-            # container is started for that run instead of being mistaken for
-            # an externally managed, always-available database.
-            stored_options = {
-                "database_type": database_type,
-                "database_identifier": database_identifier,
-                "postgres_storage_location": database_source.database_location,
-                "engine": "galaxy",
-            }
-            for option in SINGULARITY_PROFILE_OPTIONS:
-                if option in kwds and option not in stored_options:
-                    stored_options[option] = kwds[option]
-            return stored_options
+        stored_options = {
+            "database_type": database_type,
+            "engine": "galaxy",
+        }
+        if database_source.store_connection_in_profile:
+            stored_options["database_connection"] = database_connection
+        else:
+            # This connection is derived again for each run so a managed server
+            # is started instead of being mistaken for an always-available one.
+            stored_options["database_identifier"] = database_identifier
+            stored_options.update(database_source.profile_options())
+        return stored_options
 
-    return {
-        "database_type": database_type,
-        "database_connection": database_connection,
-        "engine": "galaxy",
-    }
+    return {"database_type": database_type, "database_connection": database_connection, "engine": "galaxy"}
 
 
 def _create_profile_external(ctx, profile_directory, profile_name, kwds):
@@ -210,7 +206,7 @@ def _load_profile_to_json(ctx, profile_name):
 
 def _profile_options(ctx, profile_name, **kwds):
     profile_directory = _profile_directory(ctx, profile_name)
-    profile_options = _read_profile_options(profile_directory)
+    profile_options, _ = _load_profile_to_json(ctx, profile_name)
 
     if profile_options["engine"] == "docker_galaxy":
         engine_options = dict(export_directory=os.path.join(profile_directory, "export"))
@@ -242,13 +238,6 @@ def _profile_options(ctx, profile_name, **kwds):
 def _profile_to_database_identifier(profile_name):
     char_lst = [c if c.isalnum() else "_" for c in profile_name]
     return "plnmoprof_%s" % "".join(char_lst)
-
-
-def _read_profile_options(profile_directory):
-    profile_options_path = _stored_profile_options_path(profile_directory)
-    with open(profile_options_path) as f:
-        profile_options = json.load(f)
-    return profile_options
 
 
 def _stored_profile_options_path(profile_directory):

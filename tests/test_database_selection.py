@@ -17,6 +17,7 @@ from planemo.galaxy.config import DATABASE_LOCATION_TEMPLATE
 from planemo.galaxy.profiles import (
     _create_profile_local,
     _profile_to_database_identifier,
+    create_profile,
     delete_profile,
 )
 from .test_utils import TempDirectoryContext
@@ -48,6 +49,7 @@ def test_profile_defaults_to_its_own_sqlite_file():
 
 def test_profile_creates_a_database_for_a_named_backend():
     database_source = mock.Mock()
+    database_source.store_connection_in_profile = True
     database_source.sqlalchemy_url.return_value = "postgresql://galaxy@localhost/plnmoprof_profile1234"
     with TempDirectoryContext() as temp_directory_context:
         with mock.patch(
@@ -77,7 +79,12 @@ def test_profile_creation_failure_is_not_swallowed_into_sqlite():
 
 def test_singularity_profile_stores_managed_database_inputs_not_connection():
     database_source = mock.Mock()
-    database_source.database_location = "/profiles/profile1234/postgres"
+    database_source.store_connection_in_profile = False
+    database_source.profile_options.return_value = {
+        "postgres_storage_location": "/profiles/profile1234/postgres",
+        "singularity_cmd": "apptainer",
+        "singularity_sudo": False,
+    }
     database_source.sqlalchemy_url.return_value = (
         "postgresql://galaxy:mysecretpassword@/plnmoprof_profile1234?host=/profiles/profile1234/postgres/pgrun"
     )
@@ -106,6 +113,24 @@ def test_singularity_profile_stores_managed_database_inputs_not_connection():
         "singularity_sudo": False,
         "engine": "galaxy",
     }
+
+
+def test_failed_profile_creation_removes_partial_profile_directory(tmp_path):
+    profiles_directory = tmp_path / "profiles"
+    profiles_directory.mkdir()
+    database_source = mock.Mock()
+    database_source.create_database.side_effect = RuntimeError("database unavailable")
+    context = contextlib.nullcontext(database_source)
+
+    with mock.patch("planemo.galaxy.profiles.database_source_context", return_value=context):
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            create_profile(
+                SimpleNamespace(galaxy_profiles_directory=str(profiles_directory)),
+                "profile1234",
+                database_type="postgres",
+            )
+
+    assert not (profiles_directory / "profile1234").exists()
 
 
 def test_singularity_profile_delete_drops_named_database_using_stored_location(tmp_path):

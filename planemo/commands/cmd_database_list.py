@@ -4,7 +4,10 @@ import click
 
 from planemo import options
 from planemo.cli import command_function
-from planemo.database import database_source_context
+from planemo.database import (
+    database_source_context,
+    DatabaseConfigurationError,
+)
 
 
 @click.command("database_list")
@@ -52,6 +55,9 @@ def cli(ctx, **kwds):
     \b
         *:*:*:postgres:<postgres_password>
     """
-    with database_source_context(**kwds) as datasource:
-        databases = datasource.list_databases()
+    try:
+        with database_source_context(for_database_commands=True, **kwds) as datasource:
+            databases = datasource.list_databases()
+    except DatabaseConfigurationError as e:
+        raise click.UsageError(str(e)) from e
     print(databases)

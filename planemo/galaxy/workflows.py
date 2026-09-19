@@ -10,6 +10,7 @@ from typing import (
     Callable,
     Dict,
     List,
+    NamedTuple,
     Optional,
     Protocol,
     runtime_checkable,
@@ -23,6 +24,7 @@ from urllib.parse import (
 
 if TYPE_CHECKING:
     from bioblend.galaxy import GalaxyInstance
+    from ephemeris.shed_tools import InstallRepoDict
 
 import requests
 import yaml
@@ -51,6 +53,13 @@ GALAXY_WORKFLOWS_PREFIX = "gxid://workflows/"
 GALAXY_WORKFLOW_INSTANCE_PREFIX = "gxid://workflow-instance/"
 TRS_WORKFLOWS_PREFIX = "trs://"
 MAIN_TOOLSHED_URL = "https://toolshed.g2.bx.psu.edu"
+
+
+class InstalledShedRepos(NamedTuple):
+    """Repositories installed, and updated, while preparing a runnable."""
+
+    installed_repositories: List["InstallRepoDict"]
+    updated_repositories: List["InstallRepoDict"]
 
 
 def parse_trs_id(trs_id: str) -> Optional[Dict[str, str]]:
@@ -390,10 +399,10 @@ def _install_shed_repos_from_tools_info(
     install_resolver_dependencies: bool = True,
     install_repository_dependencies: bool = True,
     install_most_recent_revision: bool = False,
-) -> Tuple[Optional[List[Any]], Optional[List[Any]]]:
+) -> InstalledShedRepos:
     """Common logic for installing tool shed repositories from a tools_info list."""
     if not tools_info:
-        return None, None
+        return InstalledShedRepos([], [])
 
     install_tool_manager = shed_tools.InstallRepositoryManager(admin_gi)
     install_results = install_tool_manager.install_repositories(
@@ -412,14 +421,15 @@ def _install_shed_repos_from_tools_info(
         install_results.errored_repositories.extend(update_results.errored_repositories)
         updated_repos = update_results.installed_repositories
     else:
-        updated_repos = None
+        updated_repos = []
 
     if install_results.errored_repositories:
+        message = f"{FAILED_REPOSITORIES_MESSAGE}\n{yaml.safe_dump(install_results.errored_repositories)}"
         if ignore_dependency_problems:
-            warn(FAILED_REPOSITORIES_MESSAGE)
+            warn(message)
         else:
-            raise Exception(FAILED_REPOSITORIES_MESSAGE)
-    return install_results.installed_repositories, updated_repos
+            raise Exception(message)
+    return InstalledShedRepos(install_results.installed_repositories, updated_repos)
 
 
 def install_shed_repos(
@@ -430,7 +440,7 @@ def install_shed_repos(
     install_resolver_dependencies=True,
     install_repository_dependencies=True,
     install_most_recent_revision=False,
-):
+) -> InstalledShedRepos:
     tools_info = load_shed_repos(runnable)
     return _install_shed_repos_from_tools_info(
         tools_info,
@@ -452,7 +462,7 @@ def install_shed_repos_for_workflow_id(
     install_resolver_dependencies: bool = True,
     install_repository_dependencies: bool = True,
     install_most_recent_revision: bool = False,
-) -> Tuple[Optional[List[Any]], Optional[List[Any]]]:
+) -> InstalledShedRepos:
     """Install tool shed repositories for a workflow that's already in Galaxy.
 
     This is used for TRS workflows that are imported via Galaxy's TRS API.

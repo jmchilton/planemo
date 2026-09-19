@@ -61,13 +61,20 @@ def _install_results(installed=None, errored=None):
     )
 
 
-def _patched_manager(monkeypatch, results):
+def _patched_manager(monkeypatch, results, update_results=None, seen=None):
     class FakeManager:
         def __init__(self, admin_gi):
             pass
 
         def install_repositories(self, tools_info, **kwds):
+            if seen is not None:
+                seen.append(("install", kwds))
             return results
+
+        def update_repositories(self, tools_info, **kwds):
+            if seen is not None:
+                seen.append(("update", kwds))
+            return update_results
 
     monkeypatch.setattr(shed_tools, "InstallRepositoryManager", FakeManager)
 
@@ -90,14 +97,46 @@ def test_install_shed_repos_returns_named_fields(monkeypatch):
 
 def test_install_shed_repos_error_names_failed_repositories(monkeypatch):
     """The exception says which repositories failed, not just that some did."""
-    errored = [{"name": "broken_tool", "owner": "iuc"}]
+    errored = [{"name": "broken_tool", "owner": "iuc", "changeset_revision": "abc123"}]
     _patched_manager(monkeypatch, _install_results(errored=errored))
     with pytest.raises(Exception) as exc_info:
         _install_shed_repos_from_tools_info([{"name": "broken_tool"}], None, False)
     message = str(exc_info.value)
     assert FAILED_REPOSITORIES_MESSAGE in message
-    assert "broken_tool" in message
-    assert "iuc" in message
+    assert "iuc/broken_tool@abc123" in message
+
+
+def test_install_shed_repos_error_label_tolerates_missing_revision(monkeypatch):
+    _patched_manager(monkeypatch, _install_results(errored=[{"name": "broken_tool", "owner": "iuc"}]))
+    with pytest.raises(Exception) as exc_info:
+        _install_shed_repos_from_tools_info([{"name": "broken_tool"}], None, False)
+    assert "iuc/broken_tool" in str(exc_info.value)
+
+
+def test_install_shed_repos_most_recent_revision_reports_updates(monkeypatch):
+    """--install_most_recent_revision fills updated_repositories from update_repositories."""
+    seen = []
+    updated = [{"name": "fastqc", "owner": "devteam"}]
+    _patched_manager(
+        monkeypatch,
+        _install_results(installed=[{"name": "fastqc"}]),
+        update_results=_install_results(installed=updated),
+        seen=seen,
+    )
+    repos = _install_shed_repos_from_tools_info([{"name": "fastqc"}], None, False, install_most_recent_revision=True)
+    assert repos.updated_repositories == updated
+    assert [call for call, _ in seen] == ["install", "update"]
+
+
+def test_install_shed_repos_most_recent_revision_surfaces_update_errors(monkeypatch):
+    """Failures from the update pass are not swallowed."""
+    _patched_manager(
+        monkeypatch,
+        _install_results(installed=[{"name": "fastqc"}]),
+        update_results=_install_results(errored=[{"name": "stale_tool", "owner": "iuc"}]),
+    )
+    with pytest.raises(Exception, match="iuc/stale_tool"):
+        _install_shed_repos_from_tools_info([{"name": "fastqc"}], None, False, install_most_recent_revision=True)
 
 
 def test_install_shed_repos_warns_when_problems_ignored(monkeypatch, capsys):
@@ -105,4 +144,4 @@ def test_install_shed_repos_warns_when_problems_ignored(monkeypatch, capsys):
     _patched_manager(monkeypatch, _install_results(installed=[{"name": "ok"}], errored=errored))
     repos = _install_shed_repos_from_tools_info([{"name": "broken_tool"}], None, True)
     assert repos.installed_repositories == [{"name": "ok"}]
-    assert "broken_tool" in capsys.readouterr().err  # warn() writes to stderr
+    assert "iuc/broken_tool" in capsys.readouterr().err  # warn() writes to stderr

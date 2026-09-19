@@ -55,6 +55,12 @@ TRS_WORKFLOWS_PREFIX = "trs://"
 MAIN_TOOLSHED_URL = "https://toolshed.g2.bx.psu.edu"
 
 
+def _repo_label(repo: "InstallRepoDict") -> str:
+    label = f"{repo.get('owner', '?')}/{repo.get('name', '?')}"
+    changeset_revision = repo.get("changeset_revision")
+    return f"{label}@{changeset_revision}" if changeset_revision else label
+
+
 class InstalledShedRepos(NamedTuple):
     """Repositories installed, and updated, while preparing a runnable."""
 
@@ -424,7 +430,8 @@ def _install_shed_repos_from_tools_info(
         updated_repos = []
 
     if install_results.errored_repositories:
-        message = f"{FAILED_REPOSITORIES_MESSAGE}\n{yaml.safe_dump(install_results.errored_repositories)}"
+        failed = ", ".join(sorted(_repo_label(repo) for repo in install_results.errored_repositories))
+        message = f"{FAILED_REPOSITORIES_MESSAGE} Failed: {failed}."
         if ignore_dependency_problems:
             warn(message)
         else:

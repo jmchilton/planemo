@@ -11,6 +11,7 @@ from shutil import (
 
 import responses
 
+from planemo import shed
 from .test_utils import (
     CliTestCase,
     skip_if_environ,
@@ -193,6 +194,24 @@ class ShedLintTestCase(CliTestCase):
             assert r.output.count("+Linting tool ") == 1
             assert "No citations found" in r.output
             assert "Traceback" not in r.output
+
+    def test_fail_fast_does_not_stop_other_repository_commands(self):
+        # A non-zero return code only means failure to shed_lint (shed_diff
+        # returns 1 for "differences found", shed_create for "already exists"),
+        # so --fail_fast must not stop traversal for other callers.
+        with self._isolate_repo("multi_repos_nested") as f:
+            visited = []
+
+            def function(realized_repository):
+                visited.append(realized_repository.real_path)
+                return 1
+
+            ctx = self.test_context
+            shed.for_each_repository(ctx, function, [f], recursive=True, fail_fast=True)
+            assert len(visited) == 2
+            del visited[:]
+            shed.for_each_repository(ctx, function, [f], recursive=True, fail_fast=True, stop_on_failure=True)
+            assert len(visited) == 1
 
     def test_ensure_metadata(self):
         with self._isolate_repo("single_tool"):

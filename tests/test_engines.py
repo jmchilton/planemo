@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import sys
 import tarfile
 
 import pytest
@@ -211,6 +212,17 @@ def test_paths_that_are_not_local_test_data_are_left_alone():
     assert _absolutize_job_paths(job, TEST_DATA_DIR) == job
 
 
+def test_relative_paths_containing_a_colon_are_resolved():
+    # Galaxy only treats "://" as a URI, so "sample:1.txt" is a relative path, not a scheme.
+    job = {"input": {"class": "File", "path": "sample:1.txt"}}
+    assert _absolutize_job_paths(job, TEST_DATA_DIR) == {
+        "input": {"class": "File", "path": os.path.join(TEST_DATA_DIR, "sample:1.txt")}
+    }
+
+
+# Python 3.14's tarfile leaves the archive in the unflushed buffer of the caller's file object,
+# and galactic_job_json (all released galaxy-tool-util versions) uploads it without flushing.
+@pytest.mark.skipif(sys.version_info >= (3, 14), reason="galactic_job_json uploads an unflushed tar on Python 3.14")
 @pytest.mark.parametrize("path_key", ["path", "location"])
 def test_inline_job_secondary_files_stage_from_original_directory(tmp_path, path_key):
     source_directory = tmp_path / "source"

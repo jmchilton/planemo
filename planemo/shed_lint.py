@@ -233,7 +233,7 @@ def _published_tool_source(tsi: "ToolShedInstance", owner: str, name: str, tool_
     trs_id = quote(f"{owner}~{name}~{tool_id}", safe="")
     url = f"{tsi.url}/tools/{trs_id}/versions/{quote(version, safe='')}/tool_source"
     try:
-        response = tsi.make_get_request(url, timeout=60)
+        response = tsi.make_get_request(url, timeout=30)
     except requests.RequestException:
         return None
     return response.text if response.status_code == 200 else None

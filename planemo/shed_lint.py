@@ -43,6 +43,8 @@ from planemo.tools import yield_tool_sources
 from planemo.xml import XSDS_PATH
 
 if TYPE_CHECKING:
+    from bioblend.toolshed import ToolShedInstance
+
     from planemo.cli import PlanemoCliContext
     from planemo.shed import RealizedRepository
 
@@ -226,12 +228,12 @@ def lint_shed_version(realized_repository: "RealizedRepository", lint_ctx):
             )
 
 
-def _published_tool_source(tsi, owner: str, name: str, tool_id: str, version: str) -> Optional[str]:
+def _published_tool_source(tsi: "ToolShedInstance", owner: str, name: str, tool_id: str, version: str) -> Optional[str]:
     """The Tool Shed's rendered source (macros expanded) for one tool version, or None if unavailable."""
     trs_id = quote(f"{owner}~{name}~{tool_id}", safe="")
-    url = f"{tsi.base_url.rstrip('/')}/api/tools/{trs_id}/versions/{quote(version, safe='')}/tool_source"
+    url = f"{tsi.url}/tools/{trs_id}/versions/{quote(version, safe='')}/tool_source"
     try:
-        response = requests.get(url, timeout=60)
+        response = tsi.make_get_request(url, timeout=60)
     except requests.RequestException:
         return None
     return response.text if response.status_code == 200 else None

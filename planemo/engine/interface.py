@@ -171,11 +171,7 @@ class BaseEngine(Engine):
 
 
 def _collect_test_data(test_case, run_response):
-    """Build a test's structured data while the engine still serves its outputs.
-
-    Engines call this before shutting down; :meth:`BaseEngine.test` reuses the
-    result instead of fetching outputs from an engine that may be gone.
-    """
+    """Build and store a test's structured data while the engine still serves outputs."""
     run_response.collected_test_data = test_case.structured_test_data(run_response)
     return run_response.collected_test_data
 

@@ -561,8 +561,7 @@ class CwlWorkflowOutput(RunnableOutput):
 class RunResponse(metaclass=abc.ABCMeta):
     """Description of an attempt for an engine to execute a Runnable."""
 
-    # Structured test data built while the engine was still running (see
-    # BaseEngine._run_test_cases), reused so results never need the engine afterwards.
+    # Structured test data built by the test output collector while the engine ran.
     collected_test_data: Optional[Dict[str, Any]] = None
 
     @property

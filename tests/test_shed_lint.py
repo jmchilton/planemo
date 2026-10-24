@@ -102,7 +102,7 @@ class ShedLintTestCase(CliTestCase):
             self._mock_tool_source(rsps, "cat", body=cat)
             self._mock_tool_source(rsps, "cat2", body=cat2.replace("tail-to-head", "head-to-tail"))
             result = self._check_exit_code(["shed_lint", "--skip", "shed_remote_repository_url"], exit_code=1)
-            assert "cat: unchanged since the latest installable revision (1.0+galaxy1)" in result.output
+            assert "cat: tool XML unchanged since the latest installable revision (1.0+galaxy1)" in result.output
             assert "cat: version" not in result.output
             assert "cat2: version 1.0+galaxy1 is less or equal" in result.output
 

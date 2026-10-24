@@ -214,7 +214,7 @@ def lint_shed_version(realized_repository: "RealizedRepository", lint_ctx):
             assert tool[0]["version"]
             ts_tool_version = tool[0]["version"]
 
-        if tool_id and tool_version == parse_version(ts_tool_version):
+        if tool_id and tool_source.parse_version() == ts_tool_version:
             # A repository's tools are linted together, so an edit to one tool would otherwise demand
             # a bump of every unchanged sibling (#1525). Same version, same rendered tool: nothing to bump.
             published = _published_tool_source(tsi, repo_owner, repo_name, tool_id, ts_tool_version)

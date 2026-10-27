@@ -131,6 +131,9 @@ You also need to specify the server URL and your API key, as Galaxy invocation I
 only unique to a particular server. You can obtain the invocation ID from
 ``<GALAXY SERVER URL>/workflows/invocations``.
 
+Steps that select from tool data tables (reference genomes, databases) need test
+index data; see :ref:`testing index data <test_loc_data>`.
+
 Publishing
 ----------
 

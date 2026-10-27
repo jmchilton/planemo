@@ -15,6 +15,8 @@ from planemo.database.postgres_docker import DockerPostgresDatabaseSource
 from planemo.galaxy.config import (
     _all_tool_paths,
     _database_connection,
+    _find_test_data,
+    _find_tool_data_table,
     _handle_job_config_file,
     _handle_kwd_overrides,
     _handle_mulled_container_kwds,
@@ -580,3 +582,19 @@ def test_container_resolvers_config_file_absent_by_default():
     properties = {}
     _handle_kwd_overrides(properties, {})
     assert "container_resolvers_config_file" not in properties
+
+
+def test_find_tool_data_table_for_workflow_in_test_data(tmp_path, monkeypatch, capsys):
+    workflow = tmp_path / "wf.gxwf.yml"
+    workflow.write_text("class: GalaxyWorkflow\ninputs: {}\noutputs: {}\nsteps: {}\n")
+    test_data = tmp_path / "test-data"
+    test_data.mkdir()
+    conf = test_data / "tool_data_table_conf.xml.test"
+    conf.write_text("<tables />")
+    runnables = [for_path(str(workflow))]
+    monkeypatch.chdir(tmp_path)
+
+    tables = _find_tool_data_table(runnables, test_data_dir=_find_test_data(runnables))
+
+    assert tables == [str(conf)]
+    assert str(conf) in capsys.readouterr().out

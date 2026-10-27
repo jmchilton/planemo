@@ -61,6 +61,7 @@ from planemo.galaxy.workflows import (
 )
 from planemo.io import (
     communicate,
+    info,
     kill_pid_file,
     KILL_SETTLE_TIMEOUT,
     shell,
@@ -1508,6 +1509,7 @@ def _find_tool_data_table(runnables, test_data_dir, **kwds) -> Optional[List[str
         tool_data_search_path, "tool_data_table_conf.xml.sample"
     )
     if tool_data_table:
+        info("Using tool data table config %s", tool_data_table)
         return [tool_data_table]
     return None
 

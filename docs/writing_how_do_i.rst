@@ -237,13 +237,12 @@ files and the ``tool_data_table_conf.xml.test`` can use the value
 lives in. This allows using relative-like paths in these files which is needed
 for portable tests.
 
-Workflow tests use the same files. When Planemo starts a local Galaxy (not
-``docker_galaxy`` or ``external_galaxy`` engines), it loads the first
-``tool_data_table_conf.xml.test`` found in the tool's or workflow's directory,
-the current directory, or the ``test-data`` directory, falling back to
-``tool_data_table_conf.xml.sample`` in the first two. The file name must match
-exactly, and Planemo prints the config it loads. Passing ``--tool_data_table``
-(repeatable) disables this search.
+Workflow tests use the same files. With the ``galaxy`` engine (not
+``docker_galaxy`` or ``external_galaxy``), Planemo loads the first
+``tool_data_table_conf.xml.test`` found in the first tool's or workflow's
+directory, the current directory, or the test data directory, falling back to
+``tool_data_table_conf.xml.sample`` in the first two, and prints the file it
+picked. ``--tool_data_table`` (repeatable) replaces this search.
 
 An example commit demonstrating the application of this approach to a Picard_
 tool can be found `here <https://github.com/jmchilton/picard/commit/4df8974384081ee1bb0f97e1bb8d7f935ba09d73>`__.

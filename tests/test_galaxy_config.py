@@ -591,6 +591,7 @@ def test_find_tool_data_table_for_workflow_in_test_data(tmp_path, monkeypatch, c
     test_data.mkdir()
     conf = test_data / "tool_data_table_conf.xml.test"
     conf.write_text("<tables />")
+    (tmp_path / "tool_data_table_conf.xml.sample").write_text("<tables />")
     runnables = [for_path(str(workflow))]
     monkeypatch.chdir(tmp_path)
 

@@ -36,6 +36,8 @@ from typing import (
 
 from Cheetah.Parser import directiveNamesAndParsers
 from galaxy.tool_util.lint import Linter
+from galaxy.tool_util.parser.parameter_validators import RegexParameterValidatorModel
+from galaxy.tool_util.parser.xml import XmlInputSource
 from galaxy.util import (
     mapped_chars,
     string_as_bool,
@@ -46,7 +48,10 @@ from planemo.linters.util import cached_lint_result
 
 if TYPE_CHECKING:
     from galaxy.tool_util.lint import LintContext
-    from galaxy.tool_util.parser.interface import ToolSource
+    from galaxy.tool_util.parser.interface import (
+        InputSource,
+        ToolSource,
+    )
 
 lint_tool_types = ["*"]
 
@@ -128,10 +133,11 @@ class SecurityCheck(NamedTuple):
 
 
 class _ParamInfo(NamedTuple):
-    """Type and XML element of an input parameter, keyed by dotted name."""
+    """Type, XML element and input source of a parameter, keyed by dotted name."""
 
     type: str
     node: Any
+    source: "InputSource"
 
 
 class _LoopScope(NamedTuple):
@@ -146,39 +152,33 @@ class _LoopScope(NamedTuple):
     bindings: Dict[str, str]
 
 
-def _parse_name_from_argument(argument: Optional[str]) -> Optional[str]:
-    """Derive a param name from its ``argument`` flag, as Galaxy does."""
-    if not argument:
-        return None
-    return argument.lstrip("-").replace("-", "_")
+def _index_params(tool_source: "ToolSource") -> Dict[str, _ParamInfo]:
+    """Map dotted parameter names (``repeat.param``, ``cond.param``) to types.
 
-
-def _index_params(root: Any) -> Dict[str, _ParamInfo]:
-    """Map dotted parameter names (``repeat.param``, ``cond.param``) to types."""
+    Names come from the tool source's input API, so they are derived from
+    ``argument`` exactly as Galaxy does when ``name`` is absent.
+    """
     params: Dict[str, _ParamInfo] = {}
-    inputs = root.find("inputs")
-    if inputs is None:
-        return params
 
-    def walk(element: Any, prefix: str) -> None:
-        for child in element:
-            if child.tag == "param":
-                # Galaxy derives the name from `argument` (dashes stripped,
-                # inner dashes replaced by underscores) when `name` is absent.
-                name = child.get("name") or _parse_name_from_argument(child.get("argument"))
-                if not name:
-                    continue
-                dotted = f"{prefix}.{name}" if prefix else name
-                params[dotted] = _ParamInfo(child.get("type") or "", child)
-            elif child.tag in ("repeat", "conditional", "section"):
-                name = child.get("name") or ""
-                sub_prefix = f"{prefix}.{name}" if prefix else name
-                walk(child, sub_prefix)
-                if child.tag == "conditional":
-                    for when in child.findall("when"):
-                        walk(when, sub_prefix)
+    def walk(input_sources: List["InputSource"], prefix: str) -> None:
+        for input_source in input_sources:
+            try:
+                name = input_source.parse_name()
+            except ValueError:
+                continue
+            dotted = f"{prefix}.{name}" if prefix else name
+            input_type = input_source.parse_input_type()
+            if input_type == "param" and isinstance(input_source, XmlInputSource):
+                params[dotted] = _ParamInfo(input_source.get("type", ""), input_source.input_elem, input_source)
+            elif input_type in ("repeat", "section"):
+                walk(input_source.parse_nested_inputs_source().parse_input_sources(), dotted)
+            elif input_type == "conditional":
+                walk([input_source.parse_test_input_source()], dotted)
+                for _value, when_source in input_source.parse_when_input_sources():
+                    walk(when_source.parse_input_sources(), dotted)
 
-    walk(inputs, "")
+    for page_source in tool_source.parse_input_pages().page_sources:
+        walk(page_source.parse_input_sources(), "")
     return params
 
 
@@ -701,21 +701,19 @@ def _mapped_chars(sanitizer_el: Any) -> Dict[str, str]:
     return mapped
 
 
-def _tool_sanitize_off_elements(root: Any) -> List[Any]:
-    """``<options>`` elements that disable sanitization for all inputs."""
-    return [el for el in root.findall("options") if not string_as_bool(el.get("sanitize", "true"))]
-
-
-def _tool_sanitize_off(root: Any, emit: Emit) -> None:
+def _tool_sanitize_off(tool_source: "ToolSource", root: Any, emit: Emit) -> None:
     """Flag tools that disable sanitization for all inputs."""
-    for options_el in _tool_sanitize_off_elements(root):
-        emit(
-            SecurityToolSanitizeOff,
-            "tool",
-            '<options sanitize="false"/> disables sanitization for all tool inputs; any character '
-            "can reach the command, remove it or clean values at use",
-            options_el,
-        )
+    if tool_source.parse_sanitize():
+        return
+    # Galaxy reads the first <options> element carrying the attribute.
+    options_el = next(el for el in root.findall("options") if "sanitize" in el.attrib)
+    emit(
+        SecurityToolSanitizeOff,
+        "tool",
+        '<options sanitize="false"/> disables sanitization for all tool inputs; any character '
+        "can reach the command, remove it or clean values at use",
+        options_el,
+    )
 
 
 def _param_is_sanitized(param_el: Any, ptype: str) -> bool:
@@ -726,13 +724,12 @@ def _param_is_sanitized(param_el: Any, ptype: str) -> bool:
     return True
 
 
-def _has_safe_validator(param_el: Any) -> bool:
+def _has_safe_validator(input_source: "InputSource") -> bool:
     """True if a regex validator restricts the param to safe characters."""
-    for validator in param_el.findall("validator"):
-        if validator.get("type") != "regex" or string_as_bool(validator.get("negate", "false")):
+    for validator in input_source.parse_validators():
+        if not isinstance(validator, RegexParameterValidatorModel) or validator.negate:
             continue
-        expression = (validator.get("expression") or validator.text or "").strip()
-        class_match = re.match(r"^\^\[([^\]]*)\](?:[+*?]|\{[^}]*\})?\$$", expression)
+        class_match = re.match(r"^\^\[([^\]]*)\](?:[+*?]|\{[^}]*\})?\$$", validator.expression.strip())
         if class_match is not None and _class_contents_safe(class_match.group(1)):
             return True
     return False
@@ -864,7 +861,7 @@ def _param_usage_checks(
 ) -> None:
     """Flag parameter values that reach the command unsafely."""
     for dotted, param_info in params.items():
-        if param_info.type != "text" or _has_safe_validator(param_info.node):
+        if param_info.type != "text" or _has_safe_validator(param_info.source):
             continue
         if tool_sanitizes and _has_safe_sanitizer(param_info.node):
             continue
@@ -961,9 +958,9 @@ def _security_checks(tool_source: "ToolSource") -> List[SecurityCheck]:
                 seen.add((linter, key))
                 checks.append(SecurityCheck(linter=linter, message=message, node=node))
 
-        params = _index_params(root)
-        _tool_sanitize_off(root, emit)
-        tool_sanitizes = not _tool_sanitize_off_elements(root)
+        params = _index_params(tool_source)
+        _tool_sanitize_off(tool_source, root, emit)
+        tool_sanitizes = tool_source.parse_sanitize()
         _param_sanitizer_checks(params, emit)
         for command_element in root.findall("command"):
             text = "".join(command_element.itertext())

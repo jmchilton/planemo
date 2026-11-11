@@ -1256,6 +1256,34 @@ def test_security_linter_ignores_escaped_placeholders(tmp_path):
     assert messages == []
 
 
+@pytest.mark.parametrize(
+    "command,inputs,expected",
+    [
+        pytest.param(
+            "tool --opt $cond.txt",
+            '<conditional name="cond"><param name="sel" type="select"><option value="a">A</option></param>'
+            '<when value="a"><param name="txt" type="text"/></when></conditional>',
+            [_unquoted("cond.txt")],
+            id="conditional-when",
+        ),
+        pytest.param(
+            "tool --opt $sec.txt",
+            '<section name="sec" title="s"><param name="txt" type="text"/></section>',
+            [_unquoted("sec.txt")],
+            id="section",
+        ),
+        pytest.param(
+            "tool --opt $sec.inner_txt",
+            '<section name="sec" title="s"><param argument="--inner-txt" type="text"/></section>',
+            [_unquoted("sec.inner_txt")],
+            id="section-argument",
+        ),
+    ],
+)
+def test_security_linter_indexes_nested_params(tmp_path, command, inputs, expected):
+    assert _lint_template_tool(tmp_path, command, inputs) == expected
+
+
 SHED_VERSION_TOOL = """<tool id="shed_version_tool" name="Shed Version Tool" version="1.0+galaxy10">
     <command>echo hi</command>
     <inputs />

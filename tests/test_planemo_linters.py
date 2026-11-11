@@ -1245,6 +1245,17 @@ def test_security_linter_elif_line_inside_quotes_does_not_flip_quote_state(tmp_p
     assert messages == []
 
 
+def test_security_linter_ignores_escaped_placeholders(tmp_path):
+    # Cheetah renders a backslash-escaped $txt literally, as a shell variable.
+    messages = _lint_template_tool(
+        tmp_path,
+        "tool --opt \\$txt '\\$coll.element_identifier'",
+        '<param name="txt" type="text"/><param name="coll" type="data_collection" collection_type="list"/>',
+    )
+
+    assert messages == []
+
+
 SHED_VERSION_TOOL = """<tool id="shed_version_tool" name="Shed Version Tool" version="1.0+galaxy10">
     <command>echo hi</command>
     <inputs />

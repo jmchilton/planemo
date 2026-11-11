@@ -86,9 +86,11 @@ _CONDITION_DIRECTIVES = frozenset(("if", "elif", "while", "unless"))
 # command. The lookahead keeps one name from matching a longer one.
 _DIRECTIVE = re.compile(r"#(" + "|".join(re.escape(name) for name in directiveNamesAndParsers) + r")(?![A-Za-z0-9_@-])")
 _CLEANING_CALL = re.compile(r"\b(?:re\.sub|shlex\.quote)\s*\(")
-_RAW_IDENTIFIER = re.compile(r"\$(?:\(|\{)?\s*\$?\s*([A-Za-z_][\w.]*)\s*\.\s*element_identifier\b")
-_COLLECTION_NAME = re.compile(r"\$(?:\(|\{)?\s*\$?\s*([A-Za-z_][\w.]*)\s*\.\s*name\b")
-_COLLECTION_KEYS = re.compile(r"\$(?:\(|\{)?\s*\$?\s*([A-Za-z_][\w.]*)\s*\.\s*keys\s*\(\s*\)?")
+# Start of a Cheetah placeholder. A backslash-escaped ``$`` renders literally.
+_PLACEHOLDER = r"(?<!\\)\$"
+_RAW_IDENTIFIER = re.compile(_PLACEHOLDER + r"(?:\(|\{)?\s*\$?\s*([A-Za-z_][\w.]*)\s*\.\s*element_identifier\b")
+_COLLECTION_NAME = re.compile(_PLACEHOLDER + r"(?:\(|\{)?\s*\$?\s*([A-Za-z_][\w.]*)\s*\.\s*name\b")
+_COLLECTION_KEYS = re.compile(_PLACEHOLDER + r"(?:\(|\{)?\s*\$?\s*([A-Za-z_][\w.]*)\s*\.\s*keys\s*\(\s*\)?")
 # Cheetah does not require the ``$`` on a loop variable, so both forms bind.
 _FOR_SIMPLE = re.compile(r"#\s*for\s+\$?([A-Za-z_]\w*)\s+in\s+\$([A-Za-z_][\w.]*)")
 _FOR_ENUMERATE = re.compile(
@@ -615,17 +617,17 @@ def _in_spans(pos: int, spans: List[Tuple[int, int]]) -> bool:
 def _reference_patterns(dotted: str, loops: Dict[str, str]) -> List[str]:
     """Regexes matching how a parameter value can be referenced in a template."""
     patterns = [
-        r"\$" + re.escape(dotted) + r"(?!\w)",
-        r"\$\{" + re.escape(dotted) + r"\}",
+        _PLACEHOLDER + re.escape(dotted) + r"(?!\w)",
+        _PLACEHOLDER + r"\{" + re.escape(dotted) + r"\}",
     ]
     for var, expr in loops.items():
         if expr == dotted:
-            patterns.append(r"\$" + re.escape(var) + r"(?!\w)")
-            patterns.append(r"\$\{" + re.escape(var) + r"\}")
+            patterns.append(_PLACEHOLDER + re.escape(var) + r"(?!\w)")
+            patterns.append(_PLACEHOLDER + r"\{" + re.escape(var) + r"\}")
         elif expr and dotted.startswith(expr + "."):
             suffix = re.escape(dotted[len(expr) + 1 :])
-            patterns.append(r"\$" + re.escape(var) + r"\." + suffix + r"(?!\w)")
-            patterns.append(r"\$\{" + re.escape(var) + r"\." + suffix + r"\}")
+            patterns.append(_PLACEHOLDER + re.escape(var) + r"\." + suffix + r"(?!\w)")
+            patterns.append(_PLACEHOLDER + r"\{" + re.escape(var) + r"\." + suffix + r"\}")
     return patterns
 
 
@@ -883,8 +885,8 @@ def _raw_accessor_patterns(dotted: str, ptype: str, loops: Dict[str, str]) -> Li
     if ptype in _SELECT_PARAM_TYPES:
         for var, expr in loops.items():
             if expr == dotted:
-                patterns.append(r"\$" + re.escape(var) + r"(?!\w)")
-                patterns.append(r"\$\{" + re.escape(var) + r"\}")
+                patterns.append(_PLACEHOLDER + re.escape(var) + r"(?!\w)")
+                patterns.append(_PLACEHOLDER + r"\{" + re.escape(var) + r"\}")
     return patterns
 
 

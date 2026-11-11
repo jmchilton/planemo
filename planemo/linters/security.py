@@ -141,9 +141,6 @@ _LOOP_VAR = re.compile(r"\$?([A-Za-z_]\w*)")
 # same sanitization.
 _SANITIZED_PARAM_TYPES = frozenset(("text", "select", "hidden"))
 
-# Types whose values are never sanitized by Galaxy when interpolated.
-_RAW_VALUE_PARAM_TYPES = frozenset(("data_column", "group_tag"))
-
 Emit = Callable[[str, str, str, Any], None]
 
 
@@ -869,16 +866,7 @@ def _param_usage_checks(
 ) -> None:
     """Flag parameter values that reach the command unsafely."""
     for dotted, param_info in params.items():
-        if param_info.type in _RAW_VALUE_PARAM_TYPES:
-            message = (
-                f"Value of {param_info.type} param '{dotted}' is not sanitized and reaches the command; "
-                "clean the value before interpolating it"
-            )
-            for match in _find_reference(dotted, scopes, text):
-                if raw_flow[match.start()] and not _in_spans(match.start(), cleaning):
-                    emit(param_info.type, dotted, message, node)
-                    break
-        elif param_info.type == "text" and not _has_safe_validator(param_info.node):
+        if param_info.type == "text" and not _has_safe_validator(param_info.node):
             message = (
                 f"Value of text param '{dotted}' is interpolated unquoted in the command; default "
                 "sanitization still allows spaces, quote it or restrict the valid characters"
@@ -960,26 +948,6 @@ class SecurityRawCollectionName(Linter):
     def lint(cls, tool_source: "ToolSource", lint_ctx: "LintContext") -> None:
         for check in _security_checks(tool_source):
             if check.linter in ("raw_collection_name", "raw_collection_keys"):
-                lint_ctx.info(check.message, linter=cls.name(), node=check.node)
-
-
-class SecurityGroupTag(Linter):
-    """Group tag values interpolated into a command."""
-
-    @classmethod
-    def lint(cls, tool_source: "ToolSource", lint_ctx: "LintContext") -> None:
-        for check in _security_checks(tool_source):
-            if check.linter == "group_tag":
-                lint_ctx.info(check.message, linter=cls.name(), node=check.node)
-
-
-class SecurityDataColumn(Linter):
-    """Data column (sample sheet) values interpolated into a command."""
-
-    @classmethod
-    def lint(cls, tool_source: "ToolSource", lint_ctx: "LintContext") -> None:
-        for check in _security_checks(tool_source):
-            if check.linter == "data_column":
                 lint_ctx.info(check.message, linter=cls.name(), node=check.node)
 
 

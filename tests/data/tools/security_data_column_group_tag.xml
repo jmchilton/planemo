@@ -20,7 +20,7 @@
         </test>
     </tests>
     <help>
-        Fixture tool exercising group tag and data column findings for the security linter.
+        Fixture tool using sanitized group tag and data column values, which the security linter must stay quiet about.
     </help>
     <citations>
         <citation type="doi">10.5072/planemo-fixture</citation>

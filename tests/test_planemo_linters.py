@@ -315,26 +315,15 @@ def test_security_linter_flags_disabled_sanitization():
     ]
 
 
-def test_security_linter_flags_column_and_tag_values():
+def test_security_linter_treats_column_and_tag_values_as_sanitized():
+    # data_column and group_tag params are select parameters, so Galaxy
+    # sanitizes their rendered values like any other select.
     tool_source = _tool_source(TEST_TOOLS_DIR, "security_data_column_group_tag.xml")
     lint_ctx = LintContext("all")
 
     lint_tool_source_with_modules(lint_ctx, tool_source, [security])
 
-    assert _messages(lint_ctx) == [
-        (
-            "info",
-            "Value of data_column param 'columnvalue' is not sanitized and reaches the command; "
-            "clean the value before interpolating it",
-            "SecurityDataColumn",
-        ),
-        (
-            "info",
-            "Value of group_tag param 'tagvalue' is not sanitized and reaches the command; "
-            "clean the value before interpolating it",
-            "SecurityGroupTag",
-        ),
-    ]
+    assert lint_ctx.message_list == []
 
 
 def test_security_linter_flags_unquoted_text():

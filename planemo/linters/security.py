@@ -34,7 +34,11 @@ from typing import (
 )
 
 from galaxy.tool_util.lint import Linter
-from galaxy.util import mapped_chars
+from galaxy.util import (
+    mapped_chars,
+    string_as_bool,
+    valid_chars,
+)
 
 from planemo.linters.util import cached_lint_result
 
@@ -54,7 +58,11 @@ SHELL_DANGEROUS_CHARS = "'\"$;|&`\\<>#"
 # Galaxy's ``safe_filename_component`` helper.
 SAFE_FILENAME_CHARS = frozenset(string.ascii_letters + string.digits + "-_.")
 
-DEFAULT_VALID_CHARS = string.ascii_letters + string.digits + " -=_.()/+*^,:?!"
+# Presets of Galaxy's ToolParameterSanitizer.
+VALID_PRESET: Dict[str, str] = {
+    "default": "".join(sorted(valid_chars)),
+    "none": "",
+}
 
 STRING_PRESET_ALIASES = {
     "letters": "ascii_letters",
@@ -67,8 +75,6 @@ MAPPING_PRESET: Dict[str, Dict[str, str]] = {
     "none": {},
 }
 
-_TRUE_VALUES = frozenset(("true", "t", "yes", "y", "on", "1"))
-_FALSE_VALUES = frozenset(("false", "f", "no", "n", "off", "0"))
 
 # Cheetah directives that evaluate a condition without rendering it, so raw
 # values on such lines do not flow into the rendered command.
@@ -665,21 +671,34 @@ def _reference_patterns(dotted: str, loops: Dict[str, str]) -> List[str]:
 
 
 def _preset_chars(name: str) -> str:
-    """Characters allowed by a ``<valid initial=...>`` sanitizer preset."""
-    if name == "default":
-        return DEFAULT_VALID_CHARS
-    if name == "none":
-        return ""
-    result = []
+    """Characters allowed by a comma-separated ``<valid>`` preset list.
+
+    Mirrors Galaxy's ``ToolParameterSanitizer.get_valid_by_name``.
+    """
+    result: List[str] = []
     for part in name.split(","):
         part = part.split(";", 1)[0].strip()
-        if not part.startswith("string."):
-            continue
-        constant_name = STRING_PRESET_ALIASES.get(part[7:], part[7:])
-        constant = getattr(string, constant_name, None)
-        if isinstance(constant, str):
-            result.append(constant)
+        value = ""
+        if part.startswith("string."):
+            constant_name = STRING_PRESET_ALIASES.get(part[7:], part[7:])
+            constant = getattr(string, constant_name, None) if not constant_name.startswith("_") else None
+            if isinstance(constant, str):
+                value = constant
+        else:
+            value = VALID_PRESET.get(part, "")
+        result.extend(char for char in value if char not in result)
     return "".join(result)
+
+
+def _mapping_preset(name: str) -> Dict[str, str]:
+    """Character mapping of a comma-separated ``<mapping>`` preset list.
+
+    Mirrors Galaxy's ``ToolParameterSanitizer.get_mapping_by_name``.
+    """
+    mapping: Dict[str, str] = {}
+    for part in name.split(","):
+        mapping.update(MAPPING_PRESET.get(part.strip(), {}))
+    return mapping
 
 
 def _allowed_chars(sanitizer_el: Any) -> str:
@@ -703,36 +722,24 @@ def _mapped_chars(sanitizer_el: Any) -> Dict[str, str]:
     mapped: Dict[str, str] = {}
     for mapping_el in sanitizer_el.findall("mapping"):
         # Each <mapping> resets the character mapping.
-        mapped = dict(MAPPING_PRESET.get(mapping_el.get("initial", "default"), {}))
+        mapped = _mapping_preset(mapping_el.get("initial", "default"))
         for action in mapping_el:
             source, target = action.get("source"), action.get("target")
             if action.tag == "add":
-                mapped.update(MAPPING_PRESET.get(action.get("preset", "none"), {}))
+                mapped.update(_mapping_preset(action.get("preset", "none")))
                 if source is not None and target is not None:
                     mapped[source] = target
             elif action.tag == "remove":
-                for key in MAPPING_PRESET.get(action.get("preset", "none"), {}):
+                for key in _mapping_preset(action.get("preset", "none")):
                     mapped.pop(key, None)
                 if source is not None:
                     mapped.pop(source, None)
     return mapped
 
 
-def _bool_value(value: Optional[str], default: bool) -> bool:
-    """Parse a PermissiveBoolean XML attribute."""
-    if value is None:
-        return default
-    lowered = value.strip().lower()
-    if lowered in _TRUE_VALUES:
-        return True
-    if lowered in _FALSE_VALUES:
-        return False
-    return default
-
-
 def _tool_sanitize_off_elements(root: Any) -> List[Any]:
     """``<options>`` elements that disable sanitization for all inputs."""
-    return [el for el in root.findall("options") if not _bool_value(el.get("sanitize", "true"), True)]
+    return [el for el in root.findall("options") if not string_as_bool(el.get("sanitize", "true"))]
 
 
 def _tool_sanitize_off(root: Any, emit: Emit) -> None:
@@ -758,7 +765,7 @@ def _param_is_sanitized(param_el: Any, ptype: str) -> bool:
 def _has_safe_validator(param_el: Any) -> bool:
     """True if a regex validator restricts the param to safe characters."""
     for validator in param_el.findall("validator"):
-        if validator.get("type") != "regex" or _bool_value(validator.get("negate", "false"), False):
+        if validator.get("type") != "regex" or string_as_bool(validator.get("negate", "false")):
             continue
         expression = (validator.get("expression") or validator.text or "").strip()
         class_match = re.match(r"^\^\[([^\]]*)\](?:[+*?]|\{[^}]*\})?\$$", expression)
@@ -774,7 +781,7 @@ def _has_safe_sanitizer(param_el: Any) -> bool:
     targets of mapped characters, and ``invalid_char``.
     """
     sanitizer_el = param_el.find("sanitizer")
-    if sanitizer_el is None or not _bool_value(sanitizer_el.get("sanitize", "true"), True):
+    if sanitizer_el is None or not string_as_bool(sanitizer_el.get("sanitize", "true")):
         return False
     valid_chars = set(_allowed_chars(sanitizer_el))
     output = valid_chars | set(sanitizer_el.get("invalid_char", "X"))
@@ -792,7 +799,7 @@ def _param_sanitizer_checks(params: Dict[str, _ParamInfo], emit: Emit) -> None:
         sanitizer_el = param_info.node.find("sanitizer")
         if sanitizer_el is None:
             continue
-        if not _bool_value(sanitizer_el.get("sanitize", "true"), True):
+        if not string_as_bool(sanitizer_el.get("sanitize", "true")):
             emit(
                 "sanitizer_disabled",
                 dotted,

@@ -1202,6 +1202,37 @@ def test_security_linter_unquoted_param_ignores_sanitizer_when_tool_sanitize_is_
     assert _unquoted("txt") in _messages(lint_ctx)
 
 
+def _sanitizer_disabled(name):
+    return (
+        "info",
+        f"Sanitization is disabled for param '{name}' (<sanitizer sanitize=\"false\"/>); any "
+        "character can reach the command, restrict the valid characters or clean the value at use",
+        "SecuritySanitizerDisabled",
+    )
+
+
+@pytest.mark.parametrize(
+    "inputs,expected",
+    [
+        # Galaxy resolves "default" inside a comma-separated preset list too,
+        # so the default characters (including space) stay valid.
+        pytest.param(
+            '<param name="txt" type="text"><sanitizer><valid initial="string.digits,default"/></sanitizer></param>',
+            [_unquoted("txt")],
+            id="default-in-preset-list",
+        ),
+        # Galaxy's string_as_bool treats anything but true/yes/on/1 as false.
+        pytest.param(
+            '<param name="txt" type="text"><sanitizer sanitize="disabled"/></param>',
+            [_sanitizer_disabled("txt"), _unquoted("txt")],
+            id="non-true-sanitize-value",
+        ),
+    ],
+)
+def test_security_linter_mirrors_galaxy_sanitizer_parsing(tmp_path, inputs, expected):
+    assert _lint_template_tool(tmp_path, "tool --opt $txt", inputs) == expected
+
+
 SHED_VERSION_TOOL = """<tool id="shed_version_tool" name="Shed Version Tool" version="1.0+galaxy10">
     <command>echo hi</command>
     <inputs />

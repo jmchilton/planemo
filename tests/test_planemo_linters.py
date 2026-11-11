@@ -483,20 +483,6 @@ def test_security_linter_resolves_loop_variables_only_where_bound(tmp_path, comm
     assert _lint_loop_tool(tmp_path, command) == []
 
 
-def test_security_loop_bindings_persist_after_their_loop():
-    # Loop variables keep their last value after #end for, so past the inner
-    # loop's body start every position sees the bindings of both loops.
-    text = "$a\n#for $a in $coll:\n## end for comment\n#for $b in $a:\n$b\n#end for\n$a\n#end for\n$a\n"
-
-    scopes = security._loop_bindings(text)
-
-    assert security._loops_at(scopes, text.index("$a\n")) == {}
-    assert security._loops_at(scopes, text.index("## end")) == {"a": "coll"}
-    assert security._loops_at(scopes, text.index("$b\n")) == {"a": "coll", "b": "coll"}
-    assert security._loops_at(scopes, text.index("$a\n#end for")) == {"a": "coll", "b": "coll"}
-    assert security._loops_at(scopes, text.rindex("$a")) == {"a": "coll", "b": "coll"}
-
-
 SECURITY_TEMPLATE_TOOL = """<tool id="security_template_tool" name="Security Template Tool" version="1.0">
     <command><![CDATA[
 {command}

@@ -20,6 +20,7 @@ and the whole module can be skipped with ``--skip security``.
 
 import re
 import string
+from functools import partial
 from typing import (
     Any,
     Callable,
@@ -140,6 +141,10 @@ _LOOP_VAR = re.compile(r"\$?([A-Za-z_]\w*)")
 # ``hidden`` inputs are text carried in the tool state, so they go through the
 # same sanitization.
 _SANITIZED_PARAM_TYPES = frozenset(("text", "select", "hidden"))
+
+# Galaxy's SelectToolParameter and its subclasses. Their wrapper sanitizes the
+# rendered value, but iterating a multiple select yields the raw values.
+_SELECT_PARAM_TYPES = frozenset(("select", "data_column", "group_tag"))
 
 Emit = Callable[[str, str, str, Any], None]
 
@@ -871,10 +876,50 @@ def _param_usage_checks(
                 f"Value of text param '{dotted}' is interpolated unquoted in the command; default "
                 "sanitization still allows spaces, quote it or restrict the valid characters"
             )
-            for match in _find_reference(dotted, scopes, text):
+            for match in _find_reference(partial(_reference_patterns, dotted), scopes, text):
                 if unquoted[match.start()] and not _in_spans(match.start(), cleaning):
                     emit("unquoted_param", dotted, message, node)
                     break
+
+
+def _raw_accessor_patterns(dotted: str, ptype: str, loops: Dict[str, str]) -> List[str]:
+    """Regexes matching template accessors that bypass a parameter's sanitization.
+
+    ``$param.value`` is the raw value for every parameter wrapper, and the
+    variable of a loop over a select is bound to its raw values.
+    """
+    patterns = _reference_patterns(f"{dotted}.value", loops)
+    if ptype in _SELECT_PARAM_TYPES:
+        for var, expr in loops.items():
+            if expr == dotted:
+                patterns.append(r"\$" + re.escape(var) + r"(?!\w)")
+                patterns.append(r"\$\{" + re.escape(var) + r"\}")
+    return patterns
+
+
+def _raw_accessor_checks(
+    text: str,
+    params: Dict[str, _ParamInfo],
+    scopes: List[_LoopScope],
+    raw_flow: List[bool],
+    node: Any,
+    emit: Emit,
+) -> None:
+    """Flag sanitized parameters whose raw value reaches the command."""
+    for dotted, param_info in params.items():
+        ptype = param_info.type
+        if ptype not in _SANITIZED_PARAM_TYPES | _SELECT_PARAM_TYPES:
+            continue
+        if not _param_is_sanitized(param_info.node, ptype):
+            continue
+        message = (
+            f"Raw value of {ptype} param '{dotted}' reaches the command through .value or a loop over "
+            f"the select, which bypass sanitization; interpolate ${dotted} itself or clean the value"
+        )
+        for match in _find_reference(partial(_raw_accessor_patterns, dotted, ptype), scopes, text):
+            if raw_flow[match.start()]:
+                emit("raw_param_value", dotted, message, node)
+                break
 
 
 def _command_checks(text: str, node: Any, params: Dict[str, _ParamInfo], emit: Emit) -> None:
@@ -885,10 +930,11 @@ def _command_checks(text: str, node: Any, params: Dict[str, _ParamInfo], emit: E
     raw_flow, unquoted = _scan_command(text, quoted, cleaning)
     _raw_flow_checks(text, params, scopes, raw_flow, cleaning, node, emit)
     _param_usage_checks(text, params, scopes, raw_flow, unquoted, cleaning, node, emit)
+    _raw_accessor_checks(text, params, scopes, raw_flow, node, emit)
 
 
-def _find_reference(dotted: str, scopes: List[_LoopScope], text: str) -> List[Any]:
-    """All matches of the possible template references to a parameter.
+def _find_reference(patterns: Callable[[Dict[str, str]], List[str]], scopes: List[_LoopScope], text: str) -> List[Any]:
+    """All matches of ``patterns(loops)``, the template references to a parameter.
 
     A reference through a loop variable only counts where that variable is
     bound to the parameter, so each region of the template (before the first
@@ -898,7 +944,7 @@ def _find_reference(dotted: str, scopes: List[_LoopScope], text: str) -> List[An
     matches: List[Any] = []
     for scope in [None, *scopes]:
         loops = scope.bindings if scope else {}
-        for pattern in _reference_patterns(dotted, loops):
+        for pattern in patterns(loops):
             matches.extend(match for match in re.finditer(pattern, text) if _scope_at(scopes, match.start()) is scope)
     return matches
 
@@ -948,6 +994,16 @@ class SecurityRawCollectionName(Linter):
     def lint(cls, tool_source: "ToolSource", lint_ctx: "LintContext") -> None:
         for check in _security_checks(tool_source):
             if check.linter in ("raw_collection_name", "raw_collection_keys"):
+                lint_ctx.info(check.message, linter=cls.name(), node=check.node)
+
+
+class SecurityRawParamValue(Linter):
+    """Raw parameter values (``.value``, loops over a select) interpolated into a command."""
+
+    @classmethod
+    def lint(cls, tool_source: "ToolSource", lint_ctx: "LintContext") -> None:
+        for check in _security_checks(tool_source):
+            if check.linter == "raw_param_value":
                 lint_ctx.info(check.message, linter=cls.name(), node=check.node)
 
 

@@ -1087,6 +1087,64 @@ def test_security_linter_accepts_unquoted_shlex_quote(tmp_path):
     assert messages == []
 
 
+def _raw_param_value(ptype, name):
+    return (
+        "info",
+        f"Raw value of {ptype} param '{name}' reaches the command through .value or a loop over "
+        f"the select, which bypass sanitization; interpolate ${name} itself or clean the value",
+        "SecurityRawParamValue",
+    )
+
+
+DYNAMIC_SELECT = '<param name="sel" type="select" multiple="true"><options from_data_table="tbl"/></param>'
+
+
+@pytest.mark.parametrize(
+    "command,inputs,expected",
+    [
+        pytest.param(
+            "echo '$txt.value'", '<param name="txt" type="text"/>', [_raw_param_value("text", "txt")], id="text-value"
+        ),
+        pytest.param("echo '${sel.value}'", DYNAMIC_SELECT, [_raw_param_value("select", "sel")], id="select-value"),
+        pytest.param(
+            "#for $v in $sel:\necho '$v'\n#end for",
+            DYNAMIC_SELECT,
+            [_raw_param_value("select", "sel")],
+            id="select-loop",
+        ),
+        pytest.param(
+            "#for $v in $col:\necho '$v'\n#end for",
+            '<param name="col" type="data_column" data_ref="d" multiple="true"/>',
+            [_raw_param_value("data_column", "col")],
+            id="data-column-loop",
+        ),
+        pytest.param(
+            "#for $r in $rep:\necho '$r.txt.value'\n#end for",
+            '<repeat name="rep" title="r"><param name="txt" type="text"/></repeat>',
+            [_raw_param_value("text", "rep.txt")],
+            id="repeat-loop-value",
+        ),
+        # Rendering the param itself goes through sanitization.
+        pytest.param("#for $v in $sel:\necho '$sel'\n#end for", DYNAMIC_SELECT, [], id="select-itself"),
+        # Static select values come from the tool XML.
+        pytest.param(
+            "echo '$sel.value'",
+            '<param name="sel" type="select"><option value="a">A</option></param>',
+            [],
+            id="static-select-value",
+        ),
+        pytest.param(
+            'echo \'$re.sub(r"[^\\w.-]", "_", $txt.value)\'', '<param name="txt" type="text"/>', [], id="cleaned-value"
+        ),
+        pytest.param(
+            "#if $txt.value == 'a':\necho a\n#end if", '<param name="txt" type="text"/>', [], id="condition-value"
+        ),
+    ],
+)
+def test_security_linter_flags_raw_param_value_accessors(tmp_path, command, inputs, expected):
+    assert _lint_template_tool(tmp_path, command, inputs) == expected
+
+
 SHED_VERSION_TOOL = """<tool id="shed_version_tool" name="Shed Version Tool" version="1.0+galaxy10">
     <command>echo hi</command>
     <inputs />

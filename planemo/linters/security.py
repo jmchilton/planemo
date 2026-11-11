@@ -30,6 +30,7 @@ from typing import (
     Optional,
     Set,
     Tuple,
+    Type,
     TYPE_CHECKING,
 )
 
@@ -113,13 +114,15 @@ _SANITIZED_PARAM_TYPES = frozenset(("text", "select", "hidden"))
 # rendered value, but iterating a multiple select yields the raw values.
 _SELECT_PARAM_TYPES = frozenset(("select", "data_column", "group_tag"))
 
-Emit = Callable[[str, str, str, Any], None]
+# Emits a finding: the Linter class reporting it, a key that deduplicates
+# findings of that class, the message and the XML node.
+Emit = Callable[[Type[Linter], str, str, Any], None]
 
 
 class SecurityCheck(NamedTuple):
     """A single finding, consumed by the ``Linter`` classes below."""
 
-    linter: str
+    linter: Type[Linter]
     message: str
     node: Any
 
@@ -707,7 +710,7 @@ def _tool_sanitize_off(root: Any, emit: Emit) -> None:
     """Flag tools that disable sanitization for all inputs."""
     for options_el in _tool_sanitize_off_elements(root):
         emit(
-            "tool_sanitize_off",
+            SecurityToolSanitizeOff,
             "tool",
             '<options sanitize="false"/> disables sanitization for all tool inputs; any character '
             "can reach the command, remove it or clean values at use",
@@ -762,7 +765,7 @@ def _param_sanitizer_checks(params: Dict[str, _ParamInfo], emit: Emit) -> None:
             continue
         if not string_as_bool(sanitizer_el.get("sanitize", "true")):
             emit(
-                "sanitizer_disabled",
+                SecuritySanitizerDisabled,
                 dotted,
                 f"Sanitization is disabled for param '{dotted}' (<sanitizer sanitize=\"false\"/>); any "
                 "character can reach the command, restrict the valid characters or clean the value at use",
@@ -790,7 +793,7 @@ def _param_sanitizer_checks(params: Dict[str, _ParamInfo], emit: Emit) -> None:
         )
         if surviving:
             emit(
-                "permissive_sanitizer",
+                SecurityPermissiveSanitizer,
                 dotted,
                 f"Sanitizer for param '{dotted}' allows shell metacharacters ('{''.join(surviving)}'); "
                 "restrict the valid characters or clean the value at use",
@@ -799,8 +802,8 @@ def _param_sanitizer_checks(params: Dict[str, _ParamInfo], emit: Emit) -> None:
         invalid_char = sanitizer_el.get("invalid_char", "X")
         if any(c in SHELL_DANGEROUS_CHARS for c in invalid_char):
             emit(
-                "dangerous_invalid_char",
-                dotted,
+                SecurityPermissiveSanitizer,
+                f"{dotted}:invalid_char",
                 f"invalid_char for param '{dotted}' contains a shell metacharacter; invalid input "
                 "characters are rewritten to it",
                 sanitizer_el,
@@ -826,7 +829,7 @@ def _raw_flow_checks(
             f"${base}.safe_element_identifier (Galaxy 26.2+) or clean it, e.g. "
             "re.sub(r'[^\\w.-]', '_', ...), before interpolating"
         )
-        emit("raw_identifier", base, message, node)
+        emit(SecurityRawIdentifier, base, message, node)
     for match in _COLLECTION_NAME.finditer(text):
         base = match.group(1)
         if _expr_type(base, params, _loops_at(scopes, match.start())) != "data_collection":
@@ -837,7 +840,7 @@ def _raw_flow_checks(
             f"${base}.name is the raw element identifier of the collection; consider "
             f"${base}.safe_element_identifier (Galaxy 26.2+) or clean it before interpolating"
         )
-        emit("raw_collection_name", base, message, node)
+        emit(SecurityRawCollectionName, base, message, node)
     for match in _COLLECTION_KEYS.finditer(text):
         base = match.group(1)
         if _expr_type(base, params, _loops_at(scopes, match.start())) != "data_collection":
@@ -845,7 +848,7 @@ def _raw_flow_checks(
         if not raw_flow[match.start()] or _in_spans(match.start(), cleaning):
             continue
         message = f"${base}.keys() returns raw element identifiers; clean each key before interpolating it"
-        emit("raw_collection_keys", base, message, node)
+        emit(SecurityRawCollectionName, f"{base}.keys()", message, node)
 
 
 def _param_usage_checks(
@@ -871,7 +874,7 @@ def _param_usage_checks(
         )
         for match in _find_reference(partial(_reference_patterns, dotted), scopes, text):
             if unquoted[match.start()] and not _in_spans(match.start(), cleaning):
-                emit("unquoted_param", dotted, message, node)
+                emit(SecurityUnquotedParam, dotted, message, node)
                 break
 
 
@@ -911,7 +914,7 @@ def _raw_accessor_checks(
         )
         for match in _find_reference(partial(_raw_accessor_patterns, dotted, ptype), scopes, text):
             if raw_flow[match.start()]:
-                emit("raw_param_value", dotted, message, node)
+                emit(SecurityRawParamValue, dotted, message, node)
                 break
 
 
@@ -951,9 +954,9 @@ def _security_checks(tool_source: "ToolSource") -> List[SecurityCheck]:
             return []
         root = tool_xml.getroot()
         checks: List[SecurityCheck] = []
-        seen: Set[Tuple[str, str]] = set()
+        seen: Set[Tuple[Type[Linter], str]] = set()
 
-        def emit(linter: str, key: str, message: str, node: Any) -> None:
+        def emit(linter: Type[Linter], key: str, message: str, node: Any) -> None:
             if (linter, key) not in seen:
                 seen.add((linter, key))
                 checks.append(SecurityCheck(linter=linter, message=message, node=node))
@@ -977,7 +980,7 @@ class SecurityRawIdentifier(Linter):
     @classmethod
     def lint(cls, tool_source: "ToolSource", lint_ctx: "LintContext") -> None:
         for check in _security_checks(tool_source):
-            if check.linter == "raw_identifier":
+            if check.linter is cls:
                 lint_ctx.info(check.message, linter=cls.name(), node=check.node)
 
 
@@ -987,7 +990,7 @@ class SecurityRawCollectionName(Linter):
     @classmethod
     def lint(cls, tool_source: "ToolSource", lint_ctx: "LintContext") -> None:
         for check in _security_checks(tool_source):
-            if check.linter in ("raw_collection_name", "raw_collection_keys"):
+            if check.linter is cls:
                 lint_ctx.info(check.message, linter=cls.name(), node=check.node)
 
 
@@ -997,7 +1000,7 @@ class SecurityRawParamValue(Linter):
     @classmethod
     def lint(cls, tool_source: "ToolSource", lint_ctx: "LintContext") -> None:
         for check in _security_checks(tool_source):
-            if check.linter == "raw_param_value":
+            if check.linter is cls:
                 lint_ctx.info(check.message, linter=cls.name(), node=check.node)
 
 
@@ -1007,7 +1010,7 @@ class SecuritySanitizerDisabled(Linter):
     @classmethod
     def lint(cls, tool_source: "ToolSource", lint_ctx: "LintContext") -> None:
         for check in _security_checks(tool_source):
-            if check.linter == "sanitizer_disabled":
+            if check.linter is cls:
                 lint_ctx.info(check.message, linter=cls.name(), node=check.node)
 
 
@@ -1017,7 +1020,7 @@ class SecurityToolSanitizeOff(Linter):
     @classmethod
     def lint(cls, tool_source: "ToolSource", lint_ctx: "LintContext") -> None:
         for check in _security_checks(tool_source):
-            if check.linter == "tool_sanitize_off":
+            if check.linter is cls:
                 lint_ctx.info(check.message, linter=cls.name(), node=check.node)
 
 
@@ -1027,7 +1030,7 @@ class SecurityPermissiveSanitizer(Linter):
     @classmethod
     def lint(cls, tool_source: "ToolSource", lint_ctx: "LintContext") -> None:
         for check in _security_checks(tool_source):
-            if check.linter in ("permissive_sanitizer", "dangerous_invalid_char"):
+            if check.linter is cls:
                 lint_ctx.info(check.message, linter=cls.name(), node=check.node)
 
 
@@ -1037,5 +1040,5 @@ class SecurityUnquotedParam(Linter):
     @classmethod
     def lint(cls, tool_source: "ToolSource", lint_ctx: "LintContext") -> None:
         for check in _security_checks(tool_source):
-            if check.linter == "unquoted_param":
+            if check.linter is cls:
                 lint_ctx.info(check.message, linter=cls.name(), node=check.node)

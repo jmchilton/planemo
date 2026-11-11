@@ -32,6 +32,16 @@ class ShedLintTestCase(CliTestCase):
         with self._isolate_repo("workflow_1"):
             self._check_exit_code(["shed_lint", "--skip", "shed_remote_repository_url"])
 
+    def test_shed_lint_security(self):
+        with self._isolate_repo("single_tool") as f:
+            copyfile(join(TEST_TOOLS_DIR, "security_raw_identifier.xml"), join(f, "security_raw_identifier.xml"))
+            # cat.xml lacks citations, so fail on errors only.
+            lint_cmd = ["shed_lint", "--tools", "--skip", "shed_remote_repository_url", "--fail_level", "error"]
+            r = self._check_exit_code(lint_cmd + ["--security"])
+            assert "SecurityRawIdentifier" in r.output
+            r = self._check_exit_code(lint_cmd)
+            assert "SecurityRawIdentifier" not in r.output
+
     def test_invalid_repos(self):
         # And now
         with self._isolate_repo("bad_readme_rst"):

@@ -352,15 +352,6 @@ def test_security_linter_stays_quiet_on_clean_tool():
     assert lint_ctx.message_list == []
 
 
-def test_security_linter_can_be_skipped_by_module_name():
-    tool_source = _tool_source(TEST_TOOLS_DIR, "security_raw_identifier.xml")
-    lint_ctx = LintContext("all", skip_types=["security"])
-
-    lint_tool_source_with_modules(lint_ctx, tool_source, [security])
-
-    assert lint_ctx.message_list == []
-
-
 SECURITY_LOOP_TOOL = """<tool id="security_loop_scope" name="Security Loop Scope" version="1.0">
     <command><![CDATA[
 {command}

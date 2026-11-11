@@ -120,6 +120,11 @@ class LintTestCase(CliTestCase):
         skipped_result = self._check_exit_code(lint_cmd)
         assert "SecurityRawIdentifier" not in skipped_result.output
         assert "SecurityRawCollectionName" not in skipped_result.output
+        # A single check can be skipped by its class name.
+        lint_cmd = ["lint", "--security", "-s", "SecurityRawIdentifier", security_tool]
+        class_skipped_result = self._check_exit_code(lint_cmd)
+        assert "SecurityRawIdentifier" not in class_skipped_result.output
+        assert "SecurityRawCollectionName" in class_skipped_result.output
 
     @skip_if_environ("PLANEMO_SKIP_SLOW_TESTS")
     def test_lint_conda_requirements_empty(self):

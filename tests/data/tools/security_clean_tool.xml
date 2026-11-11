@@ -4,11 +4,20 @@
 cp '$input1' '$output1';
 ln -s '$input1' 'out/$( re.sub(r'[^\w.-]', '_', $input1.element_identifier) )';
 echo '$textparam' '$( re.sub('[^\w.-]', '_', $collection1.name) )' '$choice';
+tool --name $restricted_text --id $validated_text --label $( shlex.quote($collection1.element_identifier) );
     ]]></command>
     <inputs>
         <param name="input1" type="data" format="txt" label="Input dataset"/>
         <param name="collection1" type="data_collection" collection_type="list" optional="true" label="List collection"/>
         <param name="textparam" type="text" label="Quoted text"/>
+        <param name="restricted_text" type="text" label="Unquoted text with a restrictive sanitizer">
+            <sanitizer>
+                <valid initial="string.ascii_letters"/>
+            </sanitizer>
+        </param>
+        <param name="validated_text" type="text" label="Unquoted text with a safe validator">
+            <validator type="regex">^[\w.-]+$</validator>
+        </param>
         <param name="choice" type="select" label="Choice">
             <option value="a">A</option>
             <option value="b">B</option>

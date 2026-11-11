@@ -343,6 +343,23 @@ def test_security_linter_flags_unquoted_text():
     ]
 
 
+def test_security_linter_sees_macro_expanded_command_and_inputs():
+    tool_source = _tool_source(TEST_TOOLS_DIR, "security_macros.xml")
+    lint_ctx = LintContext("all")
+
+    lint_tool_source_with_modules(lint_ctx, tool_source, [security])
+
+    assert _messages(lint_ctx) == [
+        (
+            "info",
+            r"Raw value of $i.element_identifier reaches the command; consider "
+            r"$i.safe_element_identifier (Galaxy 26.2+) or clean it, e.g. "
+            r"re.sub(r'[^\w.-]', '_', ...), before interpolating",
+            "SecurityRawIdentifier",
+        ),
+    ]
+
+
 def test_security_linter_stays_quiet_on_clean_tool():
     tool_source = _tool_source(TEST_TOOLS_DIR, "security_clean_tool.xml")
     lint_ctx = LintContext("all")
@@ -1258,6 +1275,133 @@ def test_security_linter_ignores_escaped_placeholders(tmp_path):
     ],
 )
 def test_security_linter_indexes_nested_params(tmp_path, command, inputs, expected):
+    assert _lint_template_tool(tmp_path, command, inputs) == expected
+
+
+def _raw_identifier(name):
+    return (
+        "info",
+        f"Raw value of ${name}.element_identifier reaches the command; consider "
+        f"${name}.safe_element_identifier (Galaxy 26.2+) or clean it, e.g. "
+        r"re.sub(r'[^\w.-]', '_', ...), before interpolating",
+        "SecurityRawIdentifier",
+    )
+
+
+def _permissive(name, chars):
+    return (
+        "info",
+        f"Sanitizer for param '{name}' allows shell metacharacters ('{chars}'); "
+        "restrict the valid characters or clean the value at use",
+        "SecurityPermissiveSanitizer",
+    )
+
+
+COLL = '<param name="coll" type="data_collection" collection_type="list"/>'
+TXT = '<param name="txt" type="text"/>'
+
+
+def _sanitized_txt(sanitizer):
+    return f'<param name="txt" type="text"><sanitizer>{sanitizer}</sanitizer></param>'
+
+
+def _validated_txt(validator):
+    return f'<param name="txt" type="text">{validator}</param>'
+
+
+@pytest.mark.parametrize(
+    "command,inputs,expected",
+    [
+        # Condition directives other than #if are inert too, their bodies are not.
+        pytest.param(
+            "#if $coll.name == 'a':\necho a;\n#elif $coll.name:\ntool --opt $txt;\n#end if",
+            COLL + TXT,
+            [_unquoted("txt")],
+            id="elif-condition",
+        ),
+        pytest.param(
+            "#while $coll.name:\ntool --opt $txt;\n#end while", COLL + TXT, [_unquoted("txt")], id="while-condition"
+        ),
+        pytest.param(
+            "#unless $coll.name:\ntool --opt $txt;\n#end unless", COLL + TXT, [_unquoted("txt")], id="unless-condition"
+        ),
+        # Sanitizer <valid> and <mapping> add/remove actions.
+        pytest.param(
+            "echo '$txt'",
+            _sanitized_txt('<valid initial="string.printable"><remove preset="string.punctuation"/></valid>'),
+            [],
+            id="valid-remove-preset",
+        ),
+        pytest.param(
+            "echo '$txt'",
+            _sanitized_txt(
+                '<valid initial="string.ascii_letters"><add preset="string.digits"/><add value="|"/></valid>'
+            ),
+            [_permissive("txt", "|")],
+            id="valid-add-preset-and-value",
+        ),
+        pytest.param(
+            "echo '$txt'",
+            _sanitized_txt('<valid initial="string.nonexistent"><add value="&amp;"/></valid>'),
+            [_permissive("txt", "&")],
+            id="unknown-string-constant",
+        ),
+        pytest.param(
+            "echo '$txt'",
+            _sanitized_txt(
+                '<valid initial="string.ascii_letters"/>'
+                '<mapping initial="none"><add preset="default"/><remove source="@"/></mapping>'
+            ),
+            [],
+            id="mapping-add-preset-remove-source",
+        ),
+        pytest.param(
+            "echo '$txt'",
+            _sanitized_txt(
+                '<valid initial="string.ascii_letters"/>'
+                '<mapping initial="default"><remove preset="default"/><add source="@" target=";"/></mapping>'
+            ),
+            [_permissive("txt", ";")],
+            id="mapping-remove-preset-add-target",
+        ),
+        # Regex validators only suppress the unquoted finding for safe classes.
+        pytest.param(
+            "tool --opt $txt",
+            _validated_txt('<validator type="regex">^[!-~]+$</validator>'),
+            [_unquoted("txt")],
+            id="validator-range-with-metacharacters",
+        ),
+        pytest.param(
+            "tool --opt $txt",
+            _validated_txt('<validator type="regex" negate="true">^[\\w]+$</validator>'),
+            [_unquoted("txt")],
+            id="negated-validator",
+        ),
+        # re.sub cleaning: positive classes, replacements and escaped quotes.
+        pytest.param(
+            "tool $( re.sub(r'[\\W]', '_', $coll.element_identifier) )", COLL, [], id="re-sub-positive-non-word-class"
+        ),
+        pytest.param(
+            "tool $( re.sub(r'[a-z]', '_', $coll.element_identifier) )",
+            COLL,
+            [_raw_identifier("coll")],
+            id="re-sub-positive-letter-class",
+        ),
+        pytest.param(
+            "tool $( re.sub(r'[^\\w]', ';', $coll.element_identifier) )",
+            COLL,
+            [_raw_identifier("coll")],
+            id="re-sub-metacharacter-replacement",
+        ),
+        pytest.param(
+            'tool $( re.sub("[^\\w.\\"]", "_", $coll.element_identifier) )',
+            COLL,
+            [_raw_identifier("coll")],
+            id="re-sub-escaped-quote-in-class",
+        ),
+    ],
+)
+def test_security_linter_advertised_behaviors(tmp_path, command, inputs, expected):
     assert _lint_template_tool(tmp_path, command, inputs) == expected
 
 

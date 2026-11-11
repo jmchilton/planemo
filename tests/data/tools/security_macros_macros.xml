@@ -1,0 +1,11 @@
+<macros>
+    <token name="@SECURITY_COMMAND@"><![CDATA[
+#for $i in $collection1:
+ln -s '$i' 'out/$i.element_identifier';
+#end for
+cat 'out/'* > '$output1';
+    ]]></token>
+    <xml name="security_inputs">
+        <param name="collection1" type="data_collection" collection_type="list" label="List collection"/>
+    </xml>
+</macros>

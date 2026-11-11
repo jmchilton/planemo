@@ -1,0 +1,24 @@
+<tool id="security_macros" name="Security Macros Fixture" version="1.0">
+    <description>fixture for the planemo security linter</description>
+    <macros>
+        <import>security_macros_macros.xml</import>
+    </macros>
+    <command>@SECURITY_COMMAND@</command>
+    <inputs>
+        <expand macro="security_inputs"/>
+    </inputs>
+    <outputs>
+        <data name="output1" format="txt"/>
+    </outputs>
+    <tests>
+        <test expect_failure="true">
+            <param name="collection1" value="1.bed"/>
+        </test>
+    </tests>
+    <help>
+        Fixture tool whose command and inputs come from macros.
+    </help>
+    <citations>
+        <citation type="doi">10.5072/planemo-fixture</citation>
+    </citations>
+</tool>

@@ -773,7 +773,7 @@ def test_security_linter_flags_dangerous_invalid_char_despite_mapping(tmp_path):
 
 def test_security_linter_accepts_word_class_validator_with_dots(tmp_path):
     # Word and digit escapes, dots and dashes stay safe in a validator class,
-    # while whitespace escapes do not (see the backslash-s case above).
+    # while whitespace escapes do not (see the backslash-s case below).
     messages = _lint_template_tool(
         tmp_path,
         "tool --opt $txt",
@@ -826,7 +826,7 @@ def test_security_linter_cheetah_comments_inside_quotes_do_not_flip_quote_state(
     # Cheetah removes ## and #* comments wherever they appear, even between
     # shell quotes, so their quotes cannot pair with the shell's: an
     # apostrophe inside a comment must not close the surrounding quote.
-    # P1: the ## comment's apostrophe must not close the awk script's quote,
+    # The ## comment's apostrophe must not close the awk script's quote,
     # which would leave $txt quoted and hide the finding.
     messages = _lint_template_tool(
         tmp_path,

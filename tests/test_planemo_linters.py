@@ -1233,6 +1233,18 @@ def test_security_linter_mirrors_galaxy_sanitizer_parsing(tmp_path, inputs, expe
     assert _lint_template_tool(tmp_path, "tool --opt $txt", inputs) == expected
 
 
+def test_security_linter_elif_line_inside_quotes_does_not_flip_quote_state(tmp_path):
+    # #elif is a Cheetah directive like #if, so the quote in its condition is
+    # not shell text and cannot end the surrounding double-quoted span.
+    messages = _lint_template_tool(
+        tmp_path,
+        "echo \"a\n#if $u == 'q'\nc\n#elif $u == 'x\"'\nb\n#end if\n\" '$txt'",
+        '<param name="u" type="text"/><param name="txt" type="text"/>',
+    )
+
+    assert messages == []
+
+
 SHED_VERSION_TOOL = """<tool id="shed_version_tool" name="Shed Version Tool" version="1.0+galaxy10">
     <command>echo hi</command>
     <inputs />

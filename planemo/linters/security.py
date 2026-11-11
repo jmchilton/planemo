@@ -33,6 +33,7 @@ from typing import (
     TYPE_CHECKING,
 )
 
+from Cheetah.Parser import directiveNamesAndParsers
 from galaxy.tool_util.lint import Linter
 from galaxy.util import (
     mapped_chars,
@@ -80,52 +81,10 @@ MAPPING_PRESET: Dict[str, Dict[str, str]] = {
 # values on such lines do not flow into the rendered command.
 _CONDITION_DIRECTIVES = frozenset(("if", "elif", "while", "unless"))
 
-# Directive names Cheetah recognizes (Cheetah's Parser.directiveNamesAndParsers).
-# A ``#`` followed by any other word is passed through literally and can then
-# start a bash comment in the rendered command.
-_CHEETAH_DIRECTIVE_NAMES = (
-    "compiler-settings",
-    "errorCatcher",
-    "defmacro",
-    "implements",
-    "breakpoint",
-    "assert",
-    "capture",
-    "closure",
-    "extends",
-    "filter",
-    "import",
-    "include",
-    "silent",
-    "return",
-    "unless",
-    "repeat",
-    "while",
-    "yield",
-    "block",
-    "break",
-    "cache",
-    "call",
-    "else",
-    "pass",
-    "raise",
-    "slurp",
-    "stop",
-    "attr",
-    "echo",
-    "from",
-    "raw",
-    "set",
-    "try",
-    "call",
-    "def",
-    "del",
-    "end",
-    "for",
-    "if",
-    "arg",
-)
-_DIRECTIVE = re.compile(r"#(" + "|".join(_CHEETAH_DIRECTIVE_NAMES) + r")(?![A-Za-z0-9_@-])")
+# Directive names Cheetah recognizes. A ``#`` followed by any other word is
+# passed through literally and can then start a bash comment in the rendered
+# command. The lookahead keeps one name from matching a longer one.
+_DIRECTIVE = re.compile(r"#(" + "|".join(re.escape(name) for name in directiveNamesAndParsers) + r")(?![A-Za-z0-9_@-])")
 _CLEANING_CALL = re.compile(r"\b(?:re\.sub|shlex\.quote)\s*\(")
 _RAW_IDENTIFIER = re.compile(r"\$(?:\(|\{)?\s*\$?\s*([A-Za-z_][\w.]*)\s*\.\s*element_identifier\b")
 _COLLECTION_NAME = re.compile(r"\$(?:\(|\{)?\s*\$?\s*([A-Za-z_][\w.]*)\s*\.\s*name\b")

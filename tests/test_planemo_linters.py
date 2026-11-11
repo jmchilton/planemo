@@ -1145,6 +1145,63 @@ def test_security_linter_flags_raw_param_value_accessors(tmp_path, command, inpu
     assert _lint_template_tool(tmp_path, command, inputs) == expected
 
 
+def _unquoted(name):
+    return (
+        "info",
+        f"Value of text param '{name}' is interpolated unquoted in the command; default "
+        "sanitization still allows spaces, quote it or restrict the valid characters",
+        "SecurityUnquotedParam",
+    )
+
+
+LETTERS_SANITIZER = '<sanitizer><valid initial="string.ascii_letters"/></sanitizer>'
+
+
+@pytest.mark.parametrize(
+    "command,inputs,expected",
+    [
+        pytest.param(
+            "tool --opt $txt", f'<param name="txt" type="text">{LETTERS_SANITIZER}</param>', [], id="safe-sanitizer"
+        ),
+        pytest.param(
+            "tool --opt $txt",
+            '<param name="txt" type="text"><sanitizer><valid initial="string.ascii_letters">'
+            '<add value=" "/></valid></sanitizer></param>',
+            [_unquoted("txt")],
+            id="sanitizer-allowing-space",
+        ),
+        pytest.param(
+            "tool --opt $txt",
+            '<param name="txt" type="text"><sanitizer invalid_char=" ">'
+            '<valid initial="string.ascii_letters"/></sanitizer></param>',
+            [_unquoted("txt")],
+            id="space-invalid-char",
+        ),
+        pytest.param(
+            "tool --opt $txt",
+            '<param name="txt" type="text"><sanitizer><valid initial="string.ascii_letters"/>'
+            '<mapping initial="none"><add source="@" target=" "/></mapping></sanitizer></param>',
+            [_unquoted("txt")],
+            id="space-mapping-target",
+        ),
+    ],
+)
+def test_security_linter_unquoted_param_respects_sanitizer(tmp_path, command, inputs, expected):
+    assert _lint_template_tool(tmp_path, command, inputs) == expected
+
+
+def test_security_linter_unquoted_param_ignores_sanitizer_when_tool_sanitize_is_off(tmp_path):
+    # <options sanitize="false"/> turns off every param's sanitizer.
+    tool = SECURITY_TEMPLATE_TOOL.format(
+        command="tool --opt $txt", inputs=f'<param name="txt" type="text">{LETTERS_SANITIZER}</param>'
+    ).replace("<outputs />", '<outputs />\n    <options sanitize="false"/>')
+    (tmp_path / "template_tool.xml").write_text(tool)
+    lint_ctx = LintContext("all")
+    lint_tool_source_with_modules(lint_ctx, _tool_source(tmp_path, "template_tool.xml"), [security])
+
+    assert _unquoted("txt") in _messages(lint_ctx)
+
+
 SHED_VERSION_TOOL = """<tool id="shed_version_tool" name="Shed Version Tool" version="1.0+galaxy10">
     <command>echo hi</command>
     <inputs />

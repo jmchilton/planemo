@@ -730,17 +730,21 @@ def _bool_value(value: Optional[str], default: bool) -> bool:
     return default
 
 
+def _tool_sanitize_off_elements(root: Any) -> List[Any]:
+    """``<options>`` elements that disable sanitization for all inputs."""
+    return [el for el in root.findall("options") if not _bool_value(el.get("sanitize", "true"), True)]
+
+
 def _tool_sanitize_off(root: Any, emit: Emit) -> None:
     """Flag tools that disable sanitization for all inputs."""
-    for options_el in root.findall("options"):
-        if not _bool_value(options_el.get("sanitize", "true"), True):
-            emit(
-                "tool_sanitize_off",
-                "tool",
-                '<options sanitize="false"/> disables sanitization for all tool inputs; any character '
-                "can reach the command, remove it or clean values at use",
-                options_el,
-            )
+    for options_el in _tool_sanitize_off_elements(root):
+        emit(
+            "tool_sanitize_off",
+            "tool",
+            '<options sanitize="false"/> disables sanitization for all tool inputs; any character '
+            "can reach the command, remove it or clean values at use",
+            options_el,
+        )
 
 
 def _param_is_sanitized(param_el: Any, ptype: str) -> bool:
@@ -761,6 +765,23 @@ def _has_safe_validator(param_el: Any) -> bool:
         if class_match is not None and _class_contents_safe(class_match.group(1)):
             return True
     return False
+
+
+def _has_safe_sanitizer(param_el: Any) -> bool:
+    """True if the param's own ``<sanitizer>`` only outputs safe characters.
+
+    The output of Galaxy's sanitization is made of valid characters, the
+    targets of mapped characters, and ``invalid_char``.
+    """
+    sanitizer_el = param_el.find("sanitizer")
+    if sanitizer_el is None or not _bool_value(sanitizer_el.get("sanitize", "true"), True):
+        return False
+    valid_chars = set(_allowed_chars(sanitizer_el))
+    output = valid_chars | set(sanitizer_el.get("invalid_char", "X"))
+    for source, target in _mapped_chars(sanitizer_el).items():
+        if source not in valid_chars:
+            output.update(target)
+    return output <= SAFE_FILENAME_CHARS
 
 
 def _param_sanitizer_checks(params: Dict[str, _ParamInfo], emit: Emit) -> None:
@@ -867,19 +888,23 @@ def _param_usage_checks(
     unquoted: List[bool],
     cleaning: List[Tuple[int, int]],
     node: Any,
+    tool_sanitizes: bool,
     emit: Emit,
 ) -> None:
     """Flag parameter values that reach the command unsafely."""
     for dotted, param_info in params.items():
-        if param_info.type == "text" and not _has_safe_validator(param_info.node):
-            message = (
-                f"Value of text param '{dotted}' is interpolated unquoted in the command; default "
-                "sanitization still allows spaces, quote it or restrict the valid characters"
-            )
-            for match in _find_reference(partial(_reference_patterns, dotted), scopes, text):
-                if unquoted[match.start()] and not _in_spans(match.start(), cleaning):
-                    emit("unquoted_param", dotted, message, node)
-                    break
+        if param_info.type != "text" or _has_safe_validator(param_info.node):
+            continue
+        if tool_sanitizes and _has_safe_sanitizer(param_info.node):
+            continue
+        message = (
+            f"Value of text param '{dotted}' is interpolated unquoted in the command; default "
+            "sanitization still allows spaces, quote it or restrict the valid characters"
+        )
+        for match in _find_reference(partial(_reference_patterns, dotted), scopes, text):
+            if unquoted[match.start()] and not _in_spans(match.start(), cleaning):
+                emit("unquoted_param", dotted, message, node)
+                break
 
 
 def _raw_accessor_patterns(dotted: str, ptype: str, loops: Dict[str, str]) -> List[str]:
@@ -922,14 +947,14 @@ def _raw_accessor_checks(
                 break
 
 
-def _command_checks(text: str, node: Any, params: Dict[str, _ParamInfo], emit: Emit) -> None:
+def _command_checks(text: str, node: Any, params: Dict[str, _ParamInfo], tool_sanitizes: bool, emit: Emit) -> None:
     """Analyze one ``<command>`` template for raw value flows."""
     quoted = _quoted_positions(text)
     cleaning = _cleaning_spans(text, quoted)
     scopes = _loop_bindings(text)
     raw_flow, unquoted = _scan_command(text, quoted, cleaning)
     _raw_flow_checks(text, params, scopes, raw_flow, cleaning, node, emit)
-    _param_usage_checks(text, params, scopes, raw_flow, unquoted, cleaning, node, emit)
+    _param_usage_checks(text, params, scopes, raw_flow, unquoted, cleaning, node, tool_sanitizes, emit)
     _raw_accessor_checks(text, params, scopes, raw_flow, node, emit)
 
 
@@ -967,11 +992,12 @@ def _security_checks(tool_source: "ToolSource") -> List[SecurityCheck]:
 
         params = _index_params(root)
         _tool_sanitize_off(root, emit)
+        tool_sanitizes = not _tool_sanitize_off_elements(root)
         _param_sanitizer_checks(params, emit)
         for command_element in root.findall("command"):
             text = "".join(command_element.itertext())
             if text.strip():
-                _command_checks(text, command_element, params, emit)
+                _command_checks(text, command_element, params, tool_sanitizes, emit)
         return checks
 
     return cached_lint_result(tool_source, "security", calculate)

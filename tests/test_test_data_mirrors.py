@@ -3,6 +3,7 @@
 import os
 from unittest import mock
 
+import pytest
 import requests
 import responses
 import yaml
@@ -129,55 +130,90 @@ def test_rewrite_job():
     assert job["composite"] == _file(hashes=hashes, composite_data=[ORIGINAL])
 
 
+@pytest.fixture(autouse=True)
+def clear_hash_mirrors():
+    hash_mirrors.cache_clear()
+
+
+def _stage(tmp_path, job, version_major="26.0", **kwds):
+    """Stage ``job`` with the real staging interface, returning the ``(api_path, payload)`` pairs posted."""
+    posted = []
+
+    def make_post_request(url, payload=None, files_attached=False):
+        api_path = url.split("/api/", 1)[1]
+        posted.append((api_path, payload))
+        if api_path == "dataset_collections":
+            return {"id": f"hdca{len(posted)}"}
+        return {"outputs": [{"id": f"hda{len(posted)}", "hid": len(posted)}], "jobs": []}
+
+    config = mock.MagicMock(version_major=version_major, use_path_paste=False)
+    config.user_gi.url = "http://galaxy.example.org/"
+    config.user_gi.make_post_request.side_effect = make_post_request
+    job_path = tmp_path / "job.yml"
+    job_path.write_text(yaml.safe_dump(job, sort_keys=False))
+    runnable = Runnable(os.path.join(TEST_DATA_DIR, "wf2.ga"), RunnableType.galaxy_workflow)
+    stage_in(create_test_context(), runnable, config, str(job_path), history_id="historyid123", **kwds)
+    return posted
+
+
+def _fetch_elements(posted):
+    return [payload["targets"][0]["elements"][0] for api_path, payload in posted if api_path == "tools/fetch"]
+
+
 @responses.activate
-def test_stage_in_uses_mirror(tmp_path):
-    hash_mirrors.cache_clear()
-    responses.add(responses.HEAD, f"{MIRROR}sha256/{SHA256[:2]}/{SHA256}", status=200)
-    job_path = tmp_path / "job.yml"
-    job_path.write_text(yaml.safe_dump({"input": _file(hashes=[{"hash_function": "SHA-256", "hash_value": SHA256}])}))
-    runnable = Runnable(os.path.join(TEST_DATA_DIR, "wf2.ga"), RunnableType.galaxy_workflow)
-    with mock.patch("planemo.galaxy.activity.PlanemoStagingInterface") as staging_interface:
-        staging_interface.return_value.stage.return_value = ({}, [])
-        stage_in(
-            create_test_context(),
-            runnable,
-            mock.MagicMock(),
-            str(job_path),
-            history_id="historyid123",
-            test_data_mirror=(MIRROR,),
-        )
-    stage_kwds = staging_interface.return_value.stage.call_args.kwargs
-    assert "job_path" not in stage_kwds
-    assert stage_kwds["job_dir"] == str(tmp_path)
-    assert stage_kwds["job"]["input"]["location"] == f"{MIRROR}sha256/{SHA256[:2]}/{SHA256}"
-    assert stage_kwds["job"]["input"]["name"] == "reads.fastq.gz?download=1"
+def test_stage_in_fetches_mirror_copy_with_declared_hashes(tmp_path):
+    responses.add(responses.HEAD, f"{MIRROR}sha1/{SHA1[:2]}/{SHA1}", status=200)
+    hashes = [{"hash_function": "SHA-1", "hash_value": SHA1}]
+    job = {
+        "reads": _file(hashes=hashes),
+        "list": [_file(hashes=hashes)],
+        "collection": {
+            "class": "Collection",
+            "collection_type": "list:paired",
+            "elements": [
+                {
+                    "class": "Collection",
+                    "type": "paired",
+                    "identifier": "sample1",
+                    "elements": [
+                        _file(identifier="forward", hashes=hashes),
+                        _file(identifier="reverse", hashes=hashes),
+                    ],
+                }
+            ],
+        },
+        "record": {"reads": _file(hashes=hashes)},
+        "composite": _file(hashes=hashes, composite_data=[ORIGINAL]),
+    }
+    elements = _fetch_elements(_stage(tmp_path, job, test_data_mirror=(MIRROR,)))
+    assert len(elements) == 6
+    for element in elements[:4]:
+        assert element["src"] == "url"
+        assert element["url"] == f"{MIRROR}sha1/{SHA1[:2]}/{SHA1}"
+        assert element["hashes"] == hashes
+        assert element["name"] == "reads.fastq.gz?download=1"
+    # staged without hashes, so Galaxy could not verify a mirror copy
+    assert elements[4]["url"] == ORIGINAL
+    assert "hashes" not in elements[4]
+    assert elements[5]["src"] == "composite"
+    assert elements[5]["composite"]["items"] == [{"src": "url", "url": ORIGINAL}]
 
 
-def test_stage_in_without_fetch_api_does_not_use_mirror(tmp_path):
+@responses.activate
+def test_stage_in_legacy_upload_does_not_use_mirror(tmp_path):
     # the legacy upload API does not send hashes, so Galaxy would not verify a mirror copy
-    hash_mirrors.cache_clear()
-    job_path = tmp_path / "job.yml"
-    job_path.write_text(yaml.safe_dump({"input": _file(hashes=[{"hash_function": "SHA-256", "hash_value": SHA256}])}))
-    runnable = Runnable(os.path.join(TEST_DATA_DIR, "wf2.ga"), RunnableType.galaxy_workflow)
-    with mock.patch("planemo.galaxy.activity.PlanemoStagingInterface") as staging_interface:
-        staging_interface.return_value.use_fetch_api = False
-        staging_interface.return_value.stage.return_value = ({}, [])
-        stage_in(
-            create_test_context(),
-            runnable,
-            mock.MagicMock(),
-            str(job_path),
-            history_id="historyid123",
-            test_data_mirror=(MIRROR,),
-        )
-    assert staging_interface.return_value.stage.call_args.kwargs["job_path"] == str(job_path)
+    responses.add(responses.HEAD, f"{MIRROR}sha256/{SHA256[:2]}/{SHA256}", status=200)
+    job = {"input": _file(hashes=[{"hash_function": "SHA-256", "hash_value": SHA256}])}
+    posted = _stage(tmp_path, job, version_major="20.05", test_data_mirror=(MIRROR,))
+    assert [api_path for api_path, _ in posted] == ["tools"]
+    assert posted[0][1]["inputs"]["files_0|url_paste"] == ORIGINAL
+    assert len(responses.calls) == 0
 
 
-def test_stage_in_without_mirror_passes_job_path(tmp_path):
-    job_path = tmp_path / "job.yml"
-    job_path.write_text(yaml.safe_dump({"input": _file()}))
-    runnable = Runnable(os.path.join(TEST_DATA_DIR, "wf2.ga"), RunnableType.galaxy_workflow)
-    with mock.patch("planemo.galaxy.activity.PlanemoStagingInterface") as staging_interface:
-        staging_interface.return_value.stage.return_value = ({}, [])
-        stage_in(create_test_context(), runnable, mock.MagicMock(), str(job_path), history_id="historyid123")
-    assert staging_interface.return_value.stage.call_args.kwargs["job_path"] == str(job_path)
+@responses.activate
+def test_stage_in_without_mirror_fetches_original(tmp_path):
+    responses.add(responses.HEAD, f"{MIRROR}sha256/{SHA256[:2]}/{SHA256}", status=200)
+    job = {"input": _file(hashes=[{"hash_function": "SHA-256", "hash_value": SHA256}])}
+    elements = _fetch_elements(_stage(tmp_path, job))
+    assert [element["url"] for element in elements] == [ORIGINAL]
+    assert len(responses.calls) == 0

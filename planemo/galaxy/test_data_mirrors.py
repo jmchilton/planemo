@@ -21,16 +21,17 @@ from typing import (
 )
 
 import requests
+from galaxy.util.hash_util import HashFunctionNameEnum
 
 from planemo.io import info
 
 # Galaxy hash function names, with the mirror directory and hex digest length for each,
 # in order of preference
-HASH_FUNCTIONS = {
-    "SHA-256": ("sha256", 64),
-    "SHA-512": ("sha512", 128),
-    "SHA-1": ("sha1", 40),
-    "MD5": ("md5", 32),
+HASH_FUNCTIONS: Dict[HashFunctionNameEnum, Tuple[str, int]] = {
+    HashFunctionNameEnum.sha256: ("sha256", 64),
+    HashFunctionNameEnum.sha512: ("sha512", 128),
+    HashFunctionNameEnum.sha1: ("sha1", 40),
+    HashFunctionNameEnum.md5: ("md5", 32),
 }
 # (connect, read) timeouts in seconds
 TIMEOUT = (3, 10)

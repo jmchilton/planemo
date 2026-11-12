@@ -87,47 +87,21 @@ def test_unreachable_mirror_is_not_asked_again():
 
 
 @responses.activate
-def test_rewrite_job():
+def test_rewrite_fetch_payload():
     responses.add(responses.HEAD, f"{MIRROR}sha1/{SHA1[:2]}/{SHA1}", status=200)
     hashes = [{"hash_function": "SHA-1", "hash_value": SHA1}]
-    job = {
-        "reads": _file(hashes=hashes),
-        "named": _file(hashes=hashes, name="my reads"),
-        "unhashed": _file(),
-        "local": _file(location="reads.fastq.gz", hashes=hashes),
-        "collection": {
-            "class": "Collection",
-            "collection_type": "list:paired",
-            "elements": [
-                {
-                    "class": "Collection",
-                    "type": "paired",
-                    "identifier": "sample1",
-                    "elements": [_file(identifier="forward", hashes=hashes)],
-                }
-            ],
-        },
-        "list": [_file(hashes=hashes)],
-        "empty_name": _file(hashes=hashes, name=""),
-        "path": {"class": "File", "location": "", "path": ORIGINAL, "hashes": hashes},
-        # staged without name and hashes by galaxy-tool-util, so Galaxy could not check a mirror copy
-        "record": {"reads": _file(hashes=hashes)},
-        "composite": _file(hashes=hashes, composite_data=[ORIGINAL]),
-    }
-    assert HashMirrors([MIRROR]).rewrite_job(job) == 6
-    mirror_url = f"{MIRROR}sha1/{SHA1[:2]}/{SHA1}"
-    assert job["reads"] == _file(location=mirror_url, hashes=hashes, name="reads.fastq.gz?download=1")
-    assert job["named"] == _file(location=mirror_url, hashes=hashes, name="my reads")
-    assert job["unhashed"] == _file()
-    assert job["local"] == _file(location="reads.fastq.gz", hashes=hashes)
-    element = job["collection"]["elements"][0]["elements"][0]
-    assert element["location"] == mirror_url
-    assert element["identifier"] == "forward"
-    assert job["list"][0]["location"] == mirror_url
-    assert job["empty_name"]["name"] == "reads.fastq.gz?download=1"
-    assert job["path"]["path"] == mirror_url
-    assert job["record"] == {"reads": _file(hashes=hashes)}
-    assert job["composite"] == _file(hashes=hashes, composite_data=[ORIGINAL])
+    elements = [
+        {"src": "url", "url": ORIGINAL, "hashes": hashes, "name": "reads"},
+        {"src": "url", "url": ORIGINAL},
+        {"src": "url", "url": "file:///data/reads.fastq.gz", "hashes": hashes},
+        {"src": "files", "hashes": hashes},
+        {"src": "composite", "hashes": hashes, "composite": {"items": [{"src": "url", "url": ORIGINAL}]}},
+    ]
+    payload = {"targets": [{"elements": [dict(element) for element in elements]}]}
+    HashMirrors([MIRROR]).rewrite_fetch_payload(payload)
+    rewritten = payload["targets"][0]["elements"]
+    assert rewritten[0] == {**elements[0], "url": f"{MIRROR}sha1/{SHA1[:2]}/{SHA1}"}
+    assert rewritten[1:] == elements[1:]
 
 
 @pytest.fixture(autouse=True)
@@ -216,4 +190,28 @@ def test_stage_in_without_mirror_fetches_original(tmp_path):
     job = {"input": _file(hashes=[{"hash_function": "SHA-256", "hash_value": SHA256}])}
     elements = _fetch_elements(_stage(tmp_path, job))
     assert [element["url"] for element in elements] == [ORIGINAL]
+    assert len(responses.calls) == 0
+
+
+@responses.activate
+def test_stage_in_uses_mirror_for_nested_element_without_class(tmp_path):
+    # galaxy-tool-util nests collection elements by collection_type, not class
+    responses.add(responses.HEAD, f"{MIRROR}sha1/{SHA1[:2]}/{SHA1}", status=200)
+    hashes = [{"hash_function": "SHA-1", "hash_value": SHA1}]
+    job = {
+        "collection": {
+            "class": "Collection",
+            "collection_type": "list:list",
+            "elements": [{"identifier": "outer", "elements": [_file(identifier="inner", hashes=hashes)]}],
+        }
+    }
+    elements = _fetch_elements(_stage(tmp_path, job, test_data_mirror=(MIRROR,)))
+    assert [element["url"] for element in elements] == [f"{MIRROR}sha1/{SHA1[:2]}/{SHA1}"]
+
+
+@responses.activate
+def test_stage_in_does_not_look_up_existing_datasets(tmp_path):
+    responses.add(responses.HEAD, f"{MIRROR}sha1/{SHA1[:2]}/{SHA1}", status=200)
+    job = {"input": _file(galaxy_id="abc123", hashes=[{"hash_function": "SHA-1", "hash_value": SHA1}])}
+    assert _stage(tmp_path, job, test_data_mirror=(MIRROR,)) == []
     assert len(responses.calls) == 0

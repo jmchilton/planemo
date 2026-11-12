@@ -3,14 +3,13 @@
 A mirror serves each file at ``<mirror>/<hash function>/<first 2 hex chars>/<hash value>``,
 with the hash in lowercase hex, e.g.
 ``https://depot.galaxyproject.org/iwc-test-data/sha1/9c/9cda46eac7cbb29508975327e410f729a4f1681c``.
-Job inputs with a remote ``location`` and declared ``hashes`` are pointed at the
-first mirror that has a matching file, and keep their original URL if none has.
-Galaxy verifies the declared hashes when fetching, so the mirror does not need to be
+Remote URLs in ``tools/fetch`` payloads that carry declared ``hashes`` are pointed at
+the first mirror that has a matching file, and keep their original URL if none has.
+Galaxy verifies those hashes when fetching, so the mirror does not need to be
 trusted. The mirror must be reachable from Galaxy, not just from planemo.
 """
 
 import functools
-import os
 import re
 from typing import (
     Any,
@@ -78,43 +77,22 @@ class HashMirrors:
                 return False
         return self._available[url]
 
-    def rewrite_job(self, job: Dict[str, Any]) -> int:
-        """Point remote files in ``job`` at mirror copies, returning how many were rewritten.
+    def rewrite_fetch_payload(self, payload: Dict[str, Any]) -> None:
+        """Point hashed remote URL elements of a ``tools/fetch`` payload at mirror copies."""
+        for target in payload.get("targets") or []:
+            for element in target.get("elements") or []:
+                self._rewrite_element(element)
 
-        Only Files that galaxy-tool-util stages with their ``name`` and ``hashes`` are
-        considered: job inputs, items of lists and elements of collections. Files in
-        records and composite data are staged without their hashes and are left alone.
-        """
-        return sum(self._rewrite_item(value) for value in job.values())
-
-    def _rewrite_item(self, item: Any) -> int:
-        if isinstance(item, list):
-            return sum(self._rewrite_item(value) for value in item)
-        if not isinstance(item, dict):
-            return 0
-        if item.get("class") == "Collection":
-            return sum(self._rewrite_item(element) for element in item.get("elements") or [])
-        if item.get("class") == "File":
-            return self._rewrite_file(item)
-        return 0
-
-    def _rewrite_file(self, file: Dict[str, Any]) -> int:
-        if not file.get("hashes") or file.get("composite_data"):
-            return 0
-        # same choice as galaxy-tool-util's staging
-        key = "location" if file.get("location") else "path"
-        location = file.get(key)
-        if not isinstance(location, str) or not location.startswith(("http://", "https://")):
-            return 0
-        url = self.mirror_url(file["hashes"])
-        if not url:
-            return 0
-        info(f"Using mirror copy {url} of {location}")
-        if not file.get("name"):
-            # the dataset name galaxy-tool-util would derive from the original URL
-            file["name"] = os.path.basename(location)
-        file[key] = url
-        return 1
+    def _rewrite_element(self, element: Dict[str, Any]) -> None:
+        url = element.get("url")
+        if element.get("src") != "url" or not element.get("hashes") or not isinstance(url, str):
+            return
+        if not url.startswith(("http://", "https://")):
+            return
+        mirror_url = self.mirror_url(element["hashes"])
+        if mirror_url:
+            info(f"Using mirror copy {mirror_url} of {url}")
+            element["url"] = mirror_url
 
 
 @functools.lru_cache(maxsize=None)

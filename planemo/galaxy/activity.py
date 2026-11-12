@@ -20,7 +20,6 @@ from typing import (
 from urllib.parse import urljoin
 
 import bioblend
-import yaml
 from bioblend.galaxy import GalaxyInstance
 from bioblend.util import attach_file
 
@@ -56,7 +55,10 @@ from planemo.galaxy.invocations.api import (
 from planemo.galaxy.invocations.polling import PollingTrackerImpl
 from planemo.galaxy.invocations.polling import wait_for_invocation_and_jobs as polling_wait_for_invocation_and_jobs
 from planemo.galaxy.invocations.progress import WorkflowProgressDisplay
-from planemo.galaxy.test_data_mirrors import hash_mirrors
+from planemo.galaxy.test_data_mirrors import (
+    hash_mirrors,
+    HashMirrors,
+)
 from planemo.galaxy.upload_progress import (
     _aggregate_job_states,
     UploadProgressDisplay,
@@ -164,6 +166,7 @@ class PlanemoStagingInterface(StagingInterface):
         simultaneous_uploads: bool,
         upload_progress_display: Optional["UploadProgressDisplay"] = None,
         deadline: Optional[float] = None,
+        test_data_mirrors: Optional[HashMirrors] = None,
     ) -> None:
         self._ctx = ctx
         self._user_gi = user_gi
@@ -172,11 +175,15 @@ class PlanemoStagingInterface(StagingInterface):
         self._simultaneous_uploads = simultaneous_uploads
         self._upload_progress_display = upload_progress_display
         self._deadline = deadline
+        self._test_data_mirrors = test_data_mirrors
         self._upload_jobs: List[Dict[str, Any]] = []
 
     def _post(self, api_path: str, payload: Dict[str, Any], files_attached: bool = False) -> Dict[str, Any]:
         # Keep the files_attached argument because StagingInterface._post() had
         # it until Galaxy 22.05.
+        # only fetch payloads send declared hashes, which Galaxy verifies against mirror copies
+        if api_path == "tools/fetch" and self._test_data_mirrors:
+            self._test_data_mirrors.rewrite_fetch_payload(payload)
         url = urljoin(self._user_gi.url, "api/" + api_path)
         if payload.get("__files"):  # put attached files where BioBlend expects them
             files_attached = True
@@ -492,6 +499,7 @@ def stage_in(
         progress_context = contextlib.nullcontext(None)
 
     with progress_context as upload_progress:
+        test_data_mirrors = kwds.get("test_data_mirror")
         psi = PlanemoStagingInterface(
             ctx,
             runnable,
@@ -500,21 +508,14 @@ def stage_in(
             simultaneous_uploads,
             upload_progress,
             deadline=deadline,
+            test_data_mirrors=hash_mirrors(tuple(test_data_mirrors)) if test_data_mirrors else None,
         )
-        job_kwds: Dict[str, Any] = {"job_path": job_path}
-        test_data_mirrors = kwds.get("test_data_mirror")
-        # only the fetch API sends declared hashes to Galaxy, which then verifies mirror copies
-        if test_data_mirrors and job_path is not None and psi.use_fetch_api:
-            with open(job_path) as fh:
-                job = yaml.safe_load(fh)
-            hash_mirrors(tuple(test_data_mirrors)).rewrite_job(job)
-            job_kwds = {"job": job, "job_dir": os.path.dirname(os.path.abspath(job_path))}
         job_dict, datasets = psi.stage(
             tool_or_workflow,
             history_id=history_id,
+            job_path=job_path,
             use_path_paste=config.use_path_paste,
             to_posix_lines=to_posix_lines,
-            **job_kwds,
         )
         psi.wait_for_uploads(kwds.get("check_uploads_ok", True))
 

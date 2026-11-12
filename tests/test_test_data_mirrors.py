@@ -87,6 +87,17 @@ def test_unreachable_mirror_is_not_asked_again():
 
 
 @responses.activate
+def test_mirror_is_asked_again_after_read_timeout():
+    responses.add(responses.HEAD, f"{MIRROR}sha1/{SHA1[:2]}/{SHA1}", body=requests.ReadTimeout("slow"))
+    responses.add(responses.HEAD, f"{MIRROR}sha256/{SHA256[:2]}/{SHA256}", status=200)
+    mirrors = HashMirrors([MIRROR])
+    assert mirrors.mirror_url([{"hash_function": "SHA-1", "hash_value": SHA1}]) is None
+    assert mirrors.mirror_url([{"hash_function": "SHA-256", "hash_value": SHA256}]) == (
+        f"{MIRROR}sha256/{SHA256[:2]}/{SHA256}"
+    )
+
+
+@responses.activate
 def test_rewrite_fetch_payload():
     responses.add(responses.HEAD, f"{MIRROR}sha1/{SHA1[:2]}/{SHA1}", status=200)
     hashes = [{"hash_function": "SHA-1", "hash_value": SHA1}]

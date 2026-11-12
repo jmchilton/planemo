@@ -43,7 +43,7 @@ class HashMirrors:
         self.mirrors = [mirror if mirror.endswith("/") else f"{mirror}/" for mirror in mirrors]
         self.session = session or requests.Session()
         self._available: Dict[str, bool] = {}
-        # mirrors that could not be reached, not asked again
+        # mirrors that could not be connected to, not asked again
         self._unreachable: Set[str] = set()
 
     def mirror_url(self, hashes: List[Dict[str, Any]]) -> Optional[str]:
@@ -71,9 +71,13 @@ class HashMirrors:
             try:
                 response = self.session.head(url, timeout=TIMEOUT, allow_redirects=True)
                 self._available[url] = response.status_code == 200
-            except requests.RequestException as e:
+            except requests.ConnectionError as e:
                 info(f"Not using test data mirror {mirror}: {e}")
                 self._unreachable.add(mirror)
+                return False
+            except requests.RequestException as e:
+                # e.g. a read timeout; the mirror may still serve other files
+                info(f"Not using test data mirror copy {url}: {e}")
                 return False
         return self._available[url]
 
